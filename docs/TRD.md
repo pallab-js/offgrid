@@ -13,7 +13,7 @@
 | Styling | Tailwind CSS v4 (CSS-first `@theme`) | tailwindcss 4.3.x, @tailwindcss/postcss |
 | Language | TypeScript 5.x, `strict: true`, no `any` in exports | — |
 | WebSocket | `ws` server, JSON text frames | ws 8.x |
-| Database | embedded SQLite, WAL, synchronous API | better-sqlite3 13.x |
+| Database | embedded SQLite, WAL, synchronous API | better-sqlite3 12.11.x (13.x needs Node ≥ 22) |
 | Client store | zustand slices (no redux) | zustand 5.x |
 | Client DB | IndexedDB wrapper | idb 8.x |
 | Validation | zod schemas shared by both planes | zod 4.x |
