@@ -935,3 +935,67 @@ function lwwWins(
 }
 
 export { currentRev };
+
+/* ------------------------------------------------ chat (P2) helpers */
+
+export function findChannel(roomId: string, channelId: string): ChannelRow | null {
+  return (
+    (getDb()
+      .prepare("SELECT * FROM channels WHERE id = ? AND room_id = ?")
+      .get(channelId, roomId) as ChannelRow | undefined) ?? null
+  );
+}
+
+/**
+ * Join notice — at most one per device per 30 minutes so reconnects and
+ * reloads don't spam the channel.
+ */
+export function insertSystemMessageIfQuiet(
+  roomId: string,
+  deviceId: string,
+  author: string,
+): { msg: ReturnType<typeof toMessage>; rev: number } | null {
+  const db = getDb();
+  return db.transaction(() => {
+    const channel = db
+      .prepare("SELECT id FROM channels WHERE room_id = ? AND name = 'general'")
+      .get(roomId) as { id: string } | undefined;
+    if (!channel) return null;
+
+    const since = Date.now() - 30 * 60 * 1000;
+    const recent = db
+      .prepare(
+        "SELECT id FROM messages WHERE room_id = ? AND device_id = ? AND kind = 'system' AND created_at > ?",
+      )
+      .get(roomId, deviceId, since);
+    if (recent) return null;
+
+    const now = Date.now();
+    const rev = nextRev(db);
+    const row: MessageRow = {
+      id: ulid(now),
+      client_id: null,
+      room_id: roomId,
+      channel_id: channel.id,
+      device_id: deviceId,
+      author,
+      kind: "system",
+      body: null,
+      iv: null,
+      reply_to: null,
+      attachments: "[]",
+      created_at: now,
+      deleted_at: null,
+      rev,
+    };
+    db.prepare(
+      `INSERT INTO messages (id, client_id, room_id, channel_id, device_id, author, kind, body, iv, reply_to, attachments, created_at, deleted_at, rev)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      row.id, row.client_id, row.room_id, row.channel_id, row.device_id,
+      row.author, row.kind, row.body, row.iv, row.reply_to, row.attachments,
+      row.created_at, row.deleted_at, row.rev,
+    );
+    return { msg: toMessage(row), rev };
+  })();
+}

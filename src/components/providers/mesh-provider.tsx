@@ -4,8 +4,16 @@ import { useCallback, useEffect, useRef } from "react";
 import { meshSocket } from "@/lib/ws/client";
 import { useMeshStore } from "@/stores/mesh";
 import { useSessionStore } from "@/stores/session";
-import type { ServerFrame } from "@/lib/protocol";
-import { isMeshEvent } from "@/lib/protocol";
+import { isMeshEvent, type MeshEvent, type ServerFrame } from "@/lib/protocol";
+import { useChatStore } from "@/stores/chat";
+
+function routeEvent(event: MeshEvent): void {
+  if (event.t === "msg.new") {
+    void useChatStore.getState().applyIncoming(event.msg);
+  } else {
+    useMeshStore.getState().applyEvent(event);
+  }
+}
 
 /**
  * Connects the hub socket to the stores. Mounted once inside the app shell.
@@ -31,9 +39,10 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
       case "joined":
         mesh.setChannels(frame.channels);
         meshSocket.send({ t: "sync.pull", cursor: useSessionStore.getState().cursor });
+        void useChatStore.getState().flushOutbox();
         break;
       case "sync.batch":
-        frame.events.forEach((event) => mesh.applyEvent(event));
+        frame.events.forEach(routeEvent);
         setCursor(frame.cursor);
         if (!frame.done) meshSocket.send({ t: "sync.pull", cursor: frame.cursor });
         break;
@@ -56,7 +65,7 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
         break;
       }
       default:
-        if (isMeshEvent(frame)) mesh.applyEvent(frame);
+        if (isMeshEvent(frame)) routeEvent(frame);
         break;
     }
   }, [setCursor]);
@@ -66,9 +75,10 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
     if (!deviceId || !profileName || !profileColor || !roomId || !token) return;
 
     const offFrame = meshSocket.onFrame(applyFrame);
-    const offStatus = meshSocket.onStatus((status) =>
-      useMeshStore.getState().setStatus(status),
-    );
+    const offStatus = meshSocket.onStatus((status) => {
+      useMeshStore.getState().setStatus(status);
+      if (status === "online") void useChatStore.getState().flushOutbox();
+    });
     const offRtt = meshSocket.onRtt((rttMs) => {
       useMeshStore.getState().setRtt(rttMs);
       const now = Date.now();

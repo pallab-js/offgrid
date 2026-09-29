@@ -1,4 +1,4 @@
-/* P1 spine smoke test — run with the dev hub already listening:
+/* P1+P2 smoke test — run with the dev hub already listening:
  *   pnpm dev &
  *   pnpm exec tsx scripts/smoke-p1.ts
  */
@@ -161,10 +161,43 @@ async function main(): Promise<void> {
   const newChannel = await b.waitFor((f) => f.t === "channel.new", 3000, "channel.new");
   check("B receives channel.new", newChannel.t === "channel.new");
 
-  // 9. phase-gated frame rejected, hub alive
-  a.send({ t: "msg.send", clientId: ulid(), channelId: "x", kind: "text", body: null, attachments: [] });
-  const notImpl = await a.waitFor((f) => f.t === "error" && f.code === "NOT_IMPLEMENTED", 3000, "NOT_IMPLEMENTED");
-  check("msg.send gated → NOT_IMPLEMENTED", notImpl.t === "error");
+  // 9. P2 messaging: system notice, send, dedupe, delete, unknown channel
+  const systemMsg = a.frames.find((f) => f.t === "msg.new" && f.msg.kind === "system");
+  check("join system message emitted", Boolean(systemMsg));
+
+  const channels = joinedA.t === "joined" ? joinedA.channels : [];
+  const general = channels.find((c) => c.name === "general")!;
+  const msgClientId = ulid();
+  const body = { ct: "ZW5jb2RlZC1jaXBoZXJ0ZXh0", iv: "aXZpdg==" };
+  a.send({ t: "msg.send", clientId: msgClientId, channelId: general.id, kind: "text", body, attachments: [] });
+  const msgAck = await a.waitFor((f) => f.t === "ack" && f.ref === msgClientId, 3000, "msg ack");
+  check("msg.send acked", msgAck.t === "ack");
+  await a.waitFor((f) => f.t === "msg.new" && f.msg.clientId === msgClientId, 3000, "msg echo");
+  const seenB = await b.waitFor((f) => f.t === "msg.new" && f.msg.clientId === msgClientId, 3000, "msg to B");
+  check("B receives msg.new", seenB.t === "msg.new");
+
+  a.send({ t: "msg.send", clientId: msgClientId, channelId: general.id, kind: "text", body, attachments: [] });
+  await a.waitFor((f) => f.t === "ack" && f.ref === msgClientId && msgAck.t === "ack" && f.rev >= 0, 3000, "dup ack");
+  await new Promise((r) => setTimeout(r, 250));
+  const dupCount = b.frames.filter((f) => f.t === "msg.new" && f.msg.clientId === msgClientId).length;
+  check("duplicate clientId deduped (no rebroadcast)", dupCount === 1, `count=${dupCount}`);
+
+  a.send({ t: "msg.send", clientId: ulid(), channelId: "nope", kind: "text", body, attachments: [] });
+  const unknownChannel = await a.waitFor((f) => f.t === "error" && f.code === "BAD_FRAME", 3000, "unknown channel");
+  check("msg.send to unknown channel → BAD_FRAME", unknownChannel.t === "error");
+
+  const delClientId = ulid();
+  if (msgAck.t === "ack") {
+    a.send({ t: "msg.del", clientId: delClientId, id: msgAck.id });
+    const delAck = await a.waitFor((f) => f.t === "ack" && f.ref === delClientId, 3000, "del ack");
+    check("msg.del acked", delAck.t === "ack");
+    const tombstone = await b.waitFor(
+      (f) => f.t === "msg.new" && msgAck.t === "ack" && f.msg.id === msgAck.id && f.msg.deletedAt !== null,
+      3000,
+      "tombstone to B",
+    );
+    check("delete broadcasts tombstone", tombstone.t === "msg.new");
+  }
 
   // 10. invalid frame rejected without dropping the socket
   a.ws.send(JSON.stringify({ t: "nonsense" }));

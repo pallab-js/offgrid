@@ -79,6 +79,14 @@ function dispatch(conn: Conn, frame: ClientFrame): void {
         serverTime: Date.now(),
       });
       emitPresence(resolved.roomId);
+      const system = repo.insertSystemMessageIfQuiet(
+        resolved.roomId,
+        frame.device.id,
+        frame.device.name,
+      );
+      if (system) {
+        emit(resolved.roomId, { t: "msg.new", msg: system.msg, rev: system.rev });
+      }
       log("info", "ws.join", { room: meta.id, device: frame.device.id });
       return;
     }
@@ -109,6 +117,39 @@ function dispatch(conn: Conn, frame: ClientFrame): void {
       return;
     }
 
+    case "msg.send": {
+      const room = requireRoom(conn);
+      if (!repo.findChannel(room, frame.channelId)) {
+        throw new repo.RepoError("BAD_FRAME", "unknown channel");
+      }
+      const { msg, rev, deduped } = repo.insertMessage({
+        roomId: room,
+        clientId: frame.clientId,
+        channelId: frame.channelId,
+        deviceId: conn.device!.id,
+        author: conn.device!.name,
+        kind: frame.kind,
+        body: frame.body,
+        replyTo: frame.replyTo ?? null,
+        attachments: frame.attachments,
+      });
+      ack(conn, frame.clientId, msg.id, rev);
+      if (!deduped) emit(room, { t: "msg.new", msg, rev });
+      return;
+    }
+
+    case "msg.del": {
+      const room = requireRoom(conn);
+      const result = repo.softDeleteMessage(room, frame.id);
+      if (!result) throw new repo.RepoError("BAD_FRAME", "message not found");
+      if (result.msg.deviceId !== conn.device!.id && result.msg.kind !== "system") {
+        throw new repo.RepoError("BAD_FRAME", "not your message");
+      }
+      ack(conn, frame.clientId, result.msg.id, result.rev);
+      if (result.changed) emit(room, { t: "msg.new", msg: result.msg, rev: result.rev });
+      return;
+    }
+
     case "channel.create": {
       const room = requireRoom(conn);
       const { channel, rev } = repo.insertChannel(room, frame.name);
@@ -130,7 +171,12 @@ function dispatch(conn: Conn, frame: ClientFrame): void {
 
     default: {
       // Frames owned by later phases — rejected explicitly, hub stays up.
-      sendError(conn, "NOT_IMPLEMENTED", `frame "${frame.t}" arrives in a later phase`);
+      sendError(
+        conn,
+        "NOT_IMPLEMENTED",
+        `frame "${frame.t}" arrives in a later phase`,
+        "clientId" in frame ? frame.clientId : undefined,
+      );
     }
   }
 }
