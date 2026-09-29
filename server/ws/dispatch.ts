@@ -1,0 +1,174 @@
+import {
+  RATE_LIMIT_PER_SEC,
+  SYNC_BATCH_LIMIT,
+  c2sSchema,
+  type ClientFrame,
+  type ErrorCode,
+  type MeshEvent,
+} from "../../src/lib/protocol";
+import { currentRev } from "../db/index";
+import * as repo from "../db/repo";
+import { log } from "../log";
+import { broadcast, enterRoom, exitRoom, onlinePeers, send, type Conn } from "./registry";
+
+export function handleMessage(conn: Conn, raw: string): void {
+  conn.lastFrameAt = Date.now();
+
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return sendError(conn, "BAD_FRAME", "invalid json");
+  }
+
+  const parsed = c2sSchema.safeParse(json);
+  if (!parsed.success) {
+    return sendError(conn, "BAD_FRAME", "invalid frame");
+  }
+  const frame = parsed.data;
+
+  if (frame.t !== "ping" && !allow(conn)) {
+    return sendError(conn, "RATE_LIMITED", "too many frames");
+  }
+
+  try {
+    dispatch(conn, frame);
+  } catch (error) {
+    if (error instanceof repo.RepoError) {
+      return sendError(conn, error.code, error.message);
+    }
+    log("error", "frame.unhandled", { code: frame.t, error: String(error) });
+    sendError(conn, "INTERNAL", "server error");
+  }
+}
+
+function dispatch(conn: Conn, frame: ClientFrame): void {
+  switch (frame.t) {
+    case "ping": {
+      send(conn, { t: "pong", ts: frame.ts, serverTs: Date.now() });
+      return;
+    }
+
+    case "join": {
+      const resolved = repo.resolveToken(frame.token);
+      if (!resolved) throw new repo.RepoError("BAD_TOKEN", "invalid token");
+      const meta = repo.getRoomMeta(resolved.roomId);
+      if (!meta) throw new repo.RepoError("ROOM_NOT_FOUND", "room gone");
+
+      if (conn.roomId && conn.roomId !== resolved.roomId) {
+        const previous = conn.roomId;
+        exitRoom(conn);
+        emitPresence(previous);
+      }
+
+      repo.upsertDevice({
+        id: frame.device.id,
+        roomId: resolved.roomId,
+        name: frame.device.name,
+        color: frame.device.color,
+      });
+      conn.device = frame.device;
+      enterRoom(conn, resolved.roomId);
+
+      send(conn, {
+        t: "joined",
+        room: { id: meta.id, name: meta.name },
+        channels: repo.listChannels(meta.id),
+        device: frame.device,
+        cursor: currentRev(),
+        serverTime: Date.now(),
+      });
+      emitPresence(resolved.roomId);
+      log("info", "ws.join", { room: meta.id, device: frame.device.id });
+      return;
+    }
+
+    case "leave": {
+      const previous = conn.roomId;
+      exitRoom(conn);
+      if (previous) emitPresence(previous);
+      return;
+    }
+
+    case "presence.update": {
+      const room = requireRoom(conn);
+      if (frame.battery !== undefined) conn.battery = frame.battery;
+      if (frame.rttMs !== undefined) conn.rttMs = frame.rttMs;
+      repo.updateDevicePresence(room, conn.device!.id, {
+        battery: frame.battery ?? undefined,
+        rttMs: frame.rttMs ?? undefined,
+      });
+      emitPresence(room);
+      return;
+    }
+
+    case "sync.pull": {
+      const room = requireRoom(conn);
+      const batch = repo.syncEvents(room, frame.cursor, SYNC_BATCH_LIMIT);
+      send(conn, { t: "sync.batch", ...batch });
+      return;
+    }
+
+    case "channel.create": {
+      const room = requireRoom(conn);
+      const { channel, rev } = repo.insertChannel(room, frame.name);
+      ack(conn, frame.clientId, channel.id, rev);
+      emit(room, { t: "channel.new", channel, rev });
+      return;
+    }
+
+    case "typing": {
+      const room = requireRoom(conn);
+      broadcast(room, {
+        t: "typing",
+        channelId: frame.channelId,
+        deviceId: conn.device!.id,
+        on: frame.on,
+      });
+      return;
+    }
+
+    default: {
+      // Frames owned by later phases — rejected explicitly, hub stays up.
+      sendError(conn, "NOT_IMPLEMENTED", `frame "${frame.t}" arrives in a later phase`);
+    }
+  }
+}
+
+/* ------------------------------------------------------------ helpers */
+
+function requireRoom(conn: Conn): string {
+  if (!conn.roomId || !conn.device) {
+    throw new repo.RepoError("NOT_IN_ROOM", "join a room first");
+  }
+  return conn.roomId;
+}
+
+function ack(conn: Conn, ref: string, id: string, rev: number): void {
+  send(conn, { t: "ack", ref, id, rev });
+}
+
+function emit(roomId: string, event: MeshEvent): void {
+  broadcast(roomId, event);
+}
+
+export function emitPresence(roomId: string): void {
+  broadcast(roomId, {
+    t: "presence",
+    peers: repo.buildPeers(roomId, onlinePeers(roomId)),
+  });
+}
+
+function sendError(conn: Conn, code: ErrorCode, message: string, ref?: string): void {
+  send(conn, { t: "error", code, message, ...(ref ? { ref } : {}) });
+}
+
+function allow(conn: Conn): boolean {
+  const now = Date.now();
+  if (now - conn.windowStart >= 1000) {
+    conn.windowStart = now;
+    conn.windowCount = 0;
+  }
+  conn.windowCount += 1;
+  return conn.windowCount <= RATE_LIMIT_PER_SEC;
+}
