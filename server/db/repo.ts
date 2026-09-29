@@ -999,3 +999,76 @@ export function insertSystemMessageIfQuiet(
     return { msg: toMessage(row), rev };
   })();
 }
+
+/* -------------------------------------------------------------- files */
+
+export function getFile(roomId: string, fileId: string): FileRow | null {
+  return (
+    (getDb()
+      .prepare("SELECT * FROM files WHERE id = ? AND room_id = ?")
+      .get(fileId, roomId) as FileRow | undefined) ?? null
+  );
+}
+
+export function insertFile(input: {
+  id: string;
+  roomId: string;
+  deviceId: string;
+  name: { ct: string; iv: string };
+  mime: string;
+  size: number;
+  sha256: string;
+  path: string;
+}): { file: ReturnType<typeof toFileMeta>; rev: number; deduped: boolean } {
+  const db = getDb();
+  return db.transaction(() => {
+    const existing = getFile(input.roomId, input.id);
+    if (existing && existing.deleted_at === null) {
+      return { file: toFileMeta(existing), rev: existing.rev, deduped: true };
+    }
+    const now = Date.now();
+    const rev = nextRev(db);
+    if (existing) {
+      db.prepare(
+        `UPDATE files SET device_id = ?, name_ct = ?, name_iv = ?, mime = ?,
+           size = ?, sha256 = ?, path = ?, created_at = ?, deleted_at = NULL, rev = ?
+         WHERE id = ? AND room_id = ?`,
+      ).run(
+        input.deviceId, input.name.ct, input.name.iv, input.mime,
+        input.size, input.sha256, input.path, now, rev,
+        input.id, input.roomId,
+      );
+      const row = getFile(input.roomId, input.id)!;
+      return { file: toFileMeta(row), rev, deduped: false };
+    }
+    db.prepare(
+      `INSERT INTO files (id, room_id, device_id, name_ct, name_iv, mime, size, sha256, path, created_at, deleted_at, rev)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+    ).run(
+      input.id, input.roomId, input.deviceId, input.name.ct, input.name.iv,
+      input.mime, input.size, input.sha256, input.path, now, rev,
+    );
+    const row = getFile(input.roomId, input.id)!;
+    return { file: toFileMeta(row), rev, deduped: false };
+  })();
+}
+
+export function softDeleteFile(
+  roomId: string,
+  fileId: string,
+): { file: ReturnType<typeof toFileMeta>; rev: number; changed: boolean } | null {
+  const db = getDb();
+  return db.transaction(() => {
+    const row = getFile(roomId, fileId);
+    if (!row) return null;
+    if (row.deleted_at !== null) {
+      return { file: toFileMeta(row), rev: row.rev, changed: false };
+    }
+    const rev = nextRev(db);
+    db.prepare("UPDATE files SET deleted_at = ?, rev = ? WHERE id = ? AND room_id = ?").run(
+      Date.now(), rev, fileId, roomId,
+    );
+    const updated = getFile(roomId, fileId)!;
+    return { file: toFileMeta(updated), rev, changed: true };
+  })();
+}

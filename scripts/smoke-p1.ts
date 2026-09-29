@@ -199,7 +199,93 @@ async function main(): Promise<void> {
     check("delete broadcasts tombstone", tombstone.t === "msg.new");
   }
 
-  // 10. invalid frame rejected without dropping the socket
+  // 10. P3 files: upload, idempotent retry, announce, range, head, delete
+  const { createHash } = await import("node:crypto");
+  const fileId = ulid();
+  const fileBytes = Buffer.from(`water-cache-notes-${"x".repeat(500)}`);
+  const fileHeaders = {
+    authorization: `Bearer ${tokenA}`,
+    "content-type": "application/octet-stream",
+    "x-file-id": fileId,
+    "x-file-name": encodeURIComponent("ZW5jLW5hbWUtY3Q="),
+    "x-file-iv": encodeURIComponent("aXZpdg=="),
+    "x-file-mime": "text/plain",
+  };
+  const upload = await api(`/api/rooms/${roomId}/files`, {
+    method: "POST",
+    headers: fileHeaders,
+    body: fileBytes,
+  });
+  check("upload → 201", upload.status === 201, `status=${upload.status}`);
+  const uploaded = (await upload.json()) as { fileId: string; rev: number; sha256: string };
+  const expectedSha = createHash("sha256").update(fileBytes).digest("hex");
+  check("upload sha256 matches", uploaded.sha256 === expectedSha);
+
+  const retryUpload = await api(`/api/rooms/${roomId}/files`, {
+    method: "POST",
+    headers: fileHeaders,
+    body: fileBytes,
+  });
+  const retried = (await retryUpload.json()) as { existing?: boolean };
+  check(
+    "re-upload same id → 200 existing",
+    retryUpload.status === 200 && retried.existing === true,
+    `status=${retryUpload.status}`,
+  );
+
+  const announceRef = ulid();
+  a.send({ t: "file.announce", clientId: announceRef, fileId });
+  const fileAck = await a.waitFor((f) => f.t === "ack" && f.ref === announceRef, 3000, "file ack");
+  check("file.announce acked", fileAck.t === "ack");
+  const fileNew = await b.waitFor((f) => f.t === "file.new" && f.file.id === fileId, 3000, "file.new");
+  check("B receives file.new", fileNew.t === "file.new");
+
+  const ranged = await api(`/api/rooms/${roomId}/files/${fileId}`, {
+    headers: { authorization: `Bearer ${tokenA}`, range: "bytes=10-19" },
+  });
+  const rangedBytes = Buffer.from(await ranged.arrayBuffer());
+  check(
+    "range → 206 + slice",
+    ranged.status === 206 &&
+      (ranged.headers.get("content-range") ?? "").startsWith(`bytes 10-19/${fileBytes.length}`) &&
+      rangedBytes.equals(fileBytes.subarray(10, 20)),
+    `status=${ranged.status}`,
+  );
+
+  const full = await api(`/api/rooms/${roomId}/files/${fileId}`, {
+    headers: { authorization: `Bearer ${tokenA}` },
+  });
+  const fullBytes = Buffer.from(await full.arrayBuffer());
+  check(
+    "full download checksum equal",
+    createHash("sha256").update(fullBytes).digest("hex") === expectedSha,
+  );
+
+  const head = await api(`/api/rooms/${roomId}/files/${fileId}`, {
+    method: "HEAD",
+    headers: { authorization: `Bearer ${tokenB}` },
+  });
+  check(
+    "HEAD metadata",
+    head.status === 200 && head.headers.get("x-file-size") === String(fileBytes.length),
+    `size=${head.headers.get("x-file-size")}`,
+  );
+
+  const delFile = await api(`/api/rooms/${roomId}/files/${fileId}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${tokenA}` },
+  });
+  const delPayload = (await delFile.json()) as { rev?: number };
+  check("DELETE file → rev", delFile.status === 200 && (delPayload.rev ?? 0) > 0);
+  const fileGoneEvent = await b.waitFor((f) => f.t === "file.deleted" && f.id === fileId, 3000, "file.deleted");
+  check("B receives file.deleted", fileGoneEvent.t === "file.deleted");
+
+  const afterDelete = await api(`/api/rooms/${roomId}/files/${fileId}`, {
+    headers: { authorization: `Bearer ${tokenA}` },
+  });
+  check("deleted file → 404", afterDelete.status === 404, `status=${afterDelete.status}`);
+
+  // 11. invalid frame rejected without dropping the socket
   a.ws.send(JSON.stringify({ t: "nonsense" }));
   const badFrame = await a.waitFor((f) => f.t === "error" && f.code === "BAD_FRAME", 3000, "BAD_FRAME");
   check("invalid frame → BAD_FRAME, socket alive", badFrame.t === "error" && a.ws.readyState === WebSocket.OPEN);

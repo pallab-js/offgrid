@@ -48,7 +48,7 @@ All responses `application/json; charset=utf-8`. Errors: `{ "error": { "code": s
 | `GET /api/rooms/:id/meta` | — | `{ name, salt, createdAt }` | needed to derive proof; no secret leaked |
 | `POST /api/rooms/:id/join` | `{ deviceId, name, color, proof }` | `{ token, serverTime }` | 403 `BAD_PROOF` on mismatch |
 | `POST /api/rooms/:id/channels` | `{ name }` | `{ channel }` | auth; slugified unique per room |
-| `POST /api/rooms/:id/files` | raw stream | `{ fileId, rev }` | auth; headers: `X-File-Name` (URI-encoded), `X-File-Mime`, `X-File-Id` (client ULID, idempotent) |
+| `POST /api/rooms/:id/files` | raw stream | `{ fileId, rev }` | auth; headers: `X-File-Name` (URI-encoded ciphertext), `X-File-Iv` (URI-encoded IV), `X-File-Mime`, `X-File-Id` (client ULID, idempotent) |
 | `GET /api/rooms/:id/files/:fileId` | — | bytes | auth; supports `Range: bytes=a-b` → 206 + `Content-Range`; `HEAD` returns metadata only |
 | `DELETE /api/rooms/:id/files/:fileId` | — | `{ rev }` | auth; soft delete + unlink |
 | `GET /api/rooms/:id/export` | — | JSON dump of device's local data | auth; generated **client-side** from IndexedDB (hub export is optional stretch) |

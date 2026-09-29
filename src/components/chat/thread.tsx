@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CornerUpLeft,
+  Download,
+  FileText,
+  Paperclip,
   RotateCcw,
   Search,
   Send,
@@ -10,6 +13,8 @@ import {
   X,
 } from "lucide-react";
 import { useChatStore, type ChatMessage } from "@/stores/chat";
+import { useFilesStore } from "@/stores/files";
+import { formatBytes } from "@/lib/files/api";
 import { useMeshStore } from "@/stores/mesh";
 import { useSessionStore } from "@/stores/session";
 import { meshSocket } from "@/lib/ws/client";
@@ -252,7 +257,11 @@ function MessageRow({
               {replied.author}: {replied.text ?? "…"}
             </div>
           ) : null}
-          {msg.text ?? "message unavailable"}
+          {msg.kind === "file" ? (
+            <AttachmentChip fileId={msg.attachments[0] ?? null} isOwn={isOwn} />
+          ) : (
+            (msg.text ?? "message unavailable")
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -301,6 +310,42 @@ function MessageRow({
   );
 }
 
+function AttachmentChip({ fileId, isOwn }: { fileId: string | null; isOwn: boolean }) {
+  const item = useFilesStore((s) =>
+    fileId ? s.items.find((f) => f.id === fileId) : undefined,
+  );
+  const progress = useFilesStore((s) => (fileId ? s.downloads[fileId] : undefined));
+  const download = useFilesStore((s) => s.download);
+
+  const pct =
+    progress && progress.total > 0
+      ? Math.min(100, Math.round((progress.loaded / progress.total) * 100))
+      : null;
+
+  return (
+    <span
+      className={cn(
+        "mt-1 inline-flex max-w-[42ch] items-center gap-2 rounded-md border px-3 py-2",
+        isOwn ? "border-on-inverse-soft/40" : "border-hairline",
+      )}
+    >
+      <FileText className="size-4 shrink-0" aria-hidden="true" />
+      <span className="truncate text-body-sm">{item?.name ?? "shared file"}</span>
+      <span className="caption shrink-0">{item ? formatBytes(item.size) : ""}</span>
+      <button
+        type="button"
+        disabled={!item || pct !== null}
+        onClick={() => item && void download(item)}
+        aria-label="Download attachment"
+        className="inline-flex size-7 shrink-0 items-center justify-center rounded-full hover:bg-surface-soft disabled:opacity-40"
+      >
+        <Download className="size-3.5" aria-hidden="true" />
+      </button>
+      {pct !== null ? <span className="caption shrink-0">{pct}%</span> : null}
+    </span>
+  );
+}
+
 function Composer({
   channelId,
   reply,
@@ -311,11 +356,30 @@ function Composer({
   onCancelReply: () => void;
 }) {
   const sendText = useChatStore((s) => s.sendText);
+  const sendAttachment = useChatStore((s) => s.sendAttachment);
+  const startUpload = useFilesStore((s) => s.startUpload);
   const status = useMeshStore((s) => s.status);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [attachBusy, setAttachBusy] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const lastTyping = useRef(0);
+
+  async function attach(file: File): Promise<void> {
+    setAttachBusy(true);
+    setAttachError(null);
+    try {
+      const fileId = await startUpload(file);
+      await sendAttachment(channelId, fileId);
+    } catch (err) {
+      setAttachError(err instanceof Error ? err.message : "upload failed");
+    } finally {
+      setAttachBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
 
   useEffect(() => {
     if (reply) taRef.current?.focus();
@@ -373,7 +437,26 @@ function Composer({
         </div>
       ) : null}
 
+      <input
+        ref={fileRef}
+        type="file"
+        className="hidden"
+        aria-label="Attach a file"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) void attach(file);
+        }}
+      />
       <div className="flex items-end gap-2">
+        <button
+          type="button"
+          disabled={attachBusy}
+          onClick={() => fileRef.current?.click()}
+          aria-label={attachBusy ? "Uploading file" : "Attach a file"}
+          className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-surface-soft text-ink hover:bg-hairline-soft disabled:opacity-40"
+        >
+          <Paperclip className="size-4" aria-hidden="true" />
+        </button>
         <textarea
           ref={taRef}
           rows={1}
@@ -405,6 +488,7 @@ function Composer({
         </Button>
       </div>
 
+      {attachError ? <p className="caption text-ink">{attachError}</p> : null}
       {status === "offline" || status === "reconnecting" ? (
         <p className="caption text-ink">
           Offline — messages queue and send when the hub is reachable.

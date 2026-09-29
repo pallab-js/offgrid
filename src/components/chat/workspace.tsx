@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import Link from "next/link";
 import { useChatStore } from "@/stores/chat";
+import { useFilesStore } from "@/stores/files";
 import { useMeshStore } from "@/stores/mesh";
 import { useSessionStore } from "@/stores/session";
 import { Eyebrow } from "@/components/ui/eyebrow";
@@ -15,6 +16,11 @@ export function ChatWorkspace() {
   const active = useChatStore((s) => s.activeChannelId);
   const setActive = useChatStore((s) => s.setActive);
   const hydrate = useChatStore((s) => s.hydrate);
+  const hydrateFiles = useFilesStore((s) => s.hydrate);
+
+  useEffect(() => {
+    void hydrateFiles();
+  }, [hydrateFiles]);
 
   useEffect(() => {
     if (channels.length === 0) return;

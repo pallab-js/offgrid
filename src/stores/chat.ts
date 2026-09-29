@@ -45,6 +45,7 @@ interface ChatState {
   setActive: (channelId: string) => void;
   hydrate: (channelId: string) => Promise<void>;
   sendText: (channelId: string, text: string, replyTo?: string | null) => Promise<void>;
+  sendAttachment: (channelId: string, fileId: string) => Promise<void>;
   deleteMessage: (message: ChatMessage) => Promise<void>;
   retryMessage: (uid: string) => Promise<void>;
   applyIncoming: (msg: Message) => Promise<void>;
@@ -186,6 +187,36 @@ export const useChatStore = create<ChatState>((set, get) => {
           body,
           replyTo,
           attachments: [],
+          createdAt: Date.now(),
+          deletedAt: null,
+          rev: 0,
+          status: "pending",
+          attempts: 0,
+          deletePending: false,
+        };
+        await putRecord(record);
+        if (get().loaded[channelId]) upsertView(await toView(record));
+        await refreshPendingCount();
+        void get().flushOutbox();
+      }),
+
+    sendAttachment: (channelId, fileId) =>
+      serialized(async () => {
+        const { deviceId, profile, roomId } = useSessionStore.getState();
+        if (!deviceId || !profile || !roomId) throw new Error("no session");
+        const clientId = ulid();
+        const record: MessageRecord = {
+          uid: clientId,
+          roomId,
+          clientId,
+          serverId: null,
+          channelId,
+          deviceId,
+          author: profile.name,
+          kind: "file",
+          body: null,
+          replyTo: null,
+          attachments: [fileId],
           createdAt: Date.now(),
           deletedAt: null,
           rev: 0,

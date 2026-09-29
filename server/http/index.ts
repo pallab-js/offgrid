@@ -1,9 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { createHash } from "node:crypto";
 import { z } from "zod";
-import { config } from "../config";
+import { config, filesDir } from "../config";
 import { currentRev } from "../db/index";
 import * as repo from "../db/repo";
-import { connectionCount } from "../ws/registry";
+import { broadcast, connectionCount } from "../ws/registry";
 import { log } from "../log";
 
 const STARTED_AT = Date.now();
@@ -76,6 +79,24 @@ export async function handleApi(
         salt: meta.salt,
         createdAt: meta.createdAt,
       });
+    }
+
+    const fileCollection = /^\/api\/rooms\/([^/]+)\/files$/.exec(path);
+    if (method === "POST" && fileCollection) {
+      const roomId = decodeURIComponent(fileCollection[1]!);
+      return await handleUpload(req, res, roomId);
+    }
+
+    const fileItem = /^\/api\/rooms\/([^/]+)\/files\/([^/]+)$/.exec(path);
+    if (fileItem) {
+      const roomId = decodeURIComponent(fileItem[1]!);
+      const fileId = decodeURIComponent(fileItem[2]!);
+      if (method === "GET" || method === "HEAD") {
+        return await handleDownload(req, res, roomId, fileId, method);
+      }
+      if (method === "DELETE") {
+        return await handleFileDelete(req, res, roomId, fileId);
+      }
     }
 
     throw new HttpError(404, "NOT_FOUND", "unknown api route");
@@ -166,4 +187,246 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   } catch {
     throw new ApiBodyError(400, "BAD_FRAME", "invalid json");
   }
+}
+
+/* ------------------------------------------------------------ file routes */
+
+async function handleUpload(
+  req: IncomingMessage,
+  res: ServerResponse,
+  roomId: string,
+): Promise<void> {
+  if (!idPart.safeParse(roomId).success) {
+    throw new HttpError(400, "BAD_FRAME", "bad room id");
+  }
+  const authed = requireToken(req, roomId);
+
+  const fileId = headerString(req, "x-file-id");
+  if (!idPart.safeParse(fileId).success) {
+    throw new HttpError(400, "BAD_FRAME", "bad X-File-Id");
+  }
+  const mime = headerString(req, "x-file-mime", 120) || "application/octet-stream";
+  const nameCt = decodeURIComponent(headerString(req, "x-file-name", 4096));
+  const nameIv = decodeURIComponent(headerString(req, "x-file-iv", 256));
+  if (!nameCt || !nameIv) {
+    throw new HttpError(400, "BAD_FRAME", "missing encrypted filename");
+  }
+
+  const existing = repo.getFile(roomId, fileId);
+  if (existing && existing.deleted_at === null) {
+    req.resume(); // drain the (already uploaded) body; idempotent retry
+    return sendJson(res, 200, {
+      fileId,
+      rev: existing.rev,
+      sha256: existing.sha256,
+      size: existing.size,
+      existing: true,
+    });
+  }
+
+  const roomDir = path.join(filesDir(), roomId);
+  await fs.promises.mkdir(roomDir, { recursive: true });
+  const finalPath = path.join(roomDir, fileId);
+  const partPath = `${finalPath}.part`;
+  const hash = createHash("sha256");
+  let bytes = 0;
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const out = fs.createWriteStream(partPath, { flags: "w" });
+      let settled = false;
+      const fail = (error: unknown): void => {
+        if (settled) return;
+        settled = true;
+        out.destroy();
+        req.destroy();
+        void fs.promises.rm(partPath, { force: true });
+        reject(error);
+      };
+
+      req.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > config.maxFileBytes) {
+          fail(new HttpError(413, "PAYLOAD_TOO_LARGE", "file exceeds size cap"));
+          return;
+        }
+        hash.update(chunk);
+        if (!out.write(chunk)) {
+          req.pause();
+          out.once("drain", () => req.resume());
+        }
+      });
+      req.on("end", () => {
+        if (settled) return;
+        out.end(() => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        });
+      });
+      req.on("error", fail);
+      req.on("aborted", () => fail(new HttpError(400, "BAD_FRAME", "upload aborted")));
+      out.on("error", fail);
+    });
+  } catch (error) {
+    await fs.promises.rm(partPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+
+  const sha256 = hash.digest("hex");
+  await fs.promises.rename(partPath, finalPath);
+
+  const { file, rev, deduped } = repo.insertFile({
+    id: fileId,
+    roomId,
+    deviceId: authed.deviceId,
+    name: { ct: nameCt, iv: nameIv },
+    mime,
+    size: bytes,
+    sha256,
+    path: finalPath,
+  });
+  log("info", "file.upload", { room: roomId, device: authed.deviceId, file: fileId, size: bytes });
+  return sendJson(res, deduped ? 200 : 201, { fileId: file.id, rev, sha256, size: bytes });
+}
+
+async function handleDownload(
+  req: IncomingMessage,
+  res: ServerResponse,
+  roomId: string,
+  fileId: string,
+  method: "GET" | "HEAD",
+): Promise<void> {
+  if (!idPart.safeParse(roomId).success || !idPart.safeParse(fileId).success) {
+    throw new HttpError(400, "BAD_FRAME", "bad id");
+  }
+  requireToken(req, roomId);
+  const row = repo.getFile(roomId, fileId);
+  if (!row || row.deleted_at !== null) {
+    throw new HttpError(404, "ROOM_NOT_FOUND", "unknown file");
+  }
+
+  const resolved = path.resolve(row.path);
+  const root = filesDir();
+  if (!resolved.startsWith(root + path.sep)) {
+    throw new HttpError(404, "ROOM_NOT_FOUND", "unknown file");
+  }
+
+  let size: number;
+  try {
+    size = (await fs.promises.stat(resolved)).size;
+  } catch {
+    throw new HttpError(410, "ROOM_NOT_FOUND", "file bytes are gone");
+  }
+
+  const baseHeaders: Record<string, string> = {
+    "content-type": row.mime,
+    "accept-ranges": "bytes",
+    "content-disposition": `attachment; filename="${fileId}"`,
+    "cache-control": "no-store",
+    "x-file-size": String(size),
+    "x-file-mime": row.mime,
+    "x-file-rev": String(row.rev),
+    "x-file-created": String(row.created_at),
+    "x-file-sha256": row.sha256 ?? "",
+  };
+
+  if (method === "HEAD") {
+    res.writeHead(200, { ...baseHeaders, "content-length": String(size) });
+    res.end();
+    return;
+  }
+
+  const range = typeof req.headers.range === "string" ? req.headers.range : null;
+  if (range) {
+    const parsed = parseRange(range, size);
+    if (!parsed) {
+      res.writeHead(416, { "content-range": `bytes */${size}` });
+      res.end();
+      return;
+    }
+    const { start, end } = parsed;
+    res.writeHead(206, {
+      ...baseHeaders,
+      "content-range": `bytes ${start}-${end}/${size}`,
+      "content-length": String(end - start + 1),
+    });
+    fs.createReadStream(resolved, { start, end }).pipe(res);
+    return;
+  }
+
+  res.writeHead(200, { ...baseHeaders, "content-length": String(size) });
+  fs.createReadStream(resolved).pipe(res);
+}
+
+async function handleFileDelete(
+  req: IncomingMessage,
+  res: ServerResponse,
+  roomId: string,
+  fileId: string,
+): Promise<void> {
+  if (!idPart.safeParse(roomId).success || !idPart.safeParse(fileId).success) {
+    throw new HttpError(400, "BAD_FRAME", "bad id");
+  }
+  const authed = requireToken(req, roomId);
+  const row = repo.getFile(roomId, fileId);
+  if (!row) throw new HttpError(404, "ROOM_NOT_FOUND", "unknown file");
+  if (row.device_id !== authed.deviceId) {
+    throw new HttpError(403, "BAD_TOKEN", "not your file");
+  }
+
+  const result = repo.softDeleteFile(roomId, fileId);
+  if (!result) throw new HttpError(404, "ROOM_NOT_FOUND", "unknown file");
+  await fs.promises.rm(path.resolve(row.path), { force: true }).catch(() => undefined);
+  await fs.promises.rm(`${path.resolve(row.path)}.part`, { force: true }).catch(() => undefined);
+  if (result.changed) {
+    broadcast(roomId, { t: "file.deleted", id: fileId, rev: result.rev });
+    log("info", "file.delete", { room: roomId, device: authed.deviceId, file: fileId });
+  }
+  return sendJson(res, 200, { rev: result.rev });
+}
+
+/* --------------------------------------------------------------- helpers */
+
+/** Single-range parser: `bytes=start-end`, `bytes=start-`, `bytes=-suffix`. */
+export function parseRange(
+  header: string,
+  size: number,
+): { start: number; end: number } | null {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match) return null;
+  const [, rawStart, rawEnd] = match;
+  if (rawStart === "" && rawEnd === "") return null;
+
+  let start: number;
+  let end: number;
+  if (rawStart === "") {
+    const suffix = Number(rawEnd);
+    if (!Number.isFinite(suffix) || suffix <= 0) return null;
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(rawStart);
+    end = rawEnd === "" ? size - 1 : Number(rawEnd);
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (start > end || start >= size) return null;
+  return { start, end: Math.min(end, size - 1) };
+}
+
+function requireToken(req: IncomingMessage, roomId: string): { deviceId: string } {
+  const header = req.headers.authorization;
+  if (!header?.startsWith("Bearer ")) {
+    throw new HttpError(401, "BAD_TOKEN", "missing bearer token");
+  }
+  const resolved = repo.resolveToken(header.slice(7), roomId);
+  if (!resolved) throw new HttpError(401, "BAD_TOKEN", "invalid token");
+  return resolved;
+}
+
+function headerString(req: IncomingMessage, name: string, cap = 256): string {
+  const raw = req.headers[name];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (!value) return "";
+  return value.slice(0, cap);
 }

@@ -8,6 +8,7 @@ import {
 } from "../../src/lib/protocol";
 import { currentRev } from "../db/index";
 import * as repo from "../db/repo";
+import { toFileMeta } from "../db/rows";
 import { log } from "../log";
 import { broadcast, enterRoom, exitRoom, onlinePeers, send, type Conn } from "./registry";
 
@@ -150,6 +151,34 @@ function dispatch(conn: Conn, frame: ClientFrame): void {
       return;
     }
 
+    case "file.announce": {
+      const room = requireRoom(conn);
+      const row = repo.getFile(room, frame.fileId);
+      if (!row) throw new repo.RepoError("BAD_FRAME", "unknown file");
+      ack(conn, frame.clientId, row.id, row.rev);
+      if (row.deleted_at === null) {
+        emit(room, { t: "file.new", file: toFileMeta(row), rev: row.rev });
+      }
+      return;
+    }
+
+    case "file.del": {
+      const room = requireRoom(conn);
+      const row = repo.getFile(room, frame.fileId);
+      if (!row) throw new repo.RepoError("BAD_FRAME", "unknown file");
+      if (row.device_id !== conn.device!.id) {
+        throw new repo.RepoError("BAD_FRAME", "not your file");
+      }
+      const result = repo.softDeleteFile(room, frame.fileId);
+      if (!result) throw new repo.RepoError("BAD_FRAME", "unknown file");
+      ack(conn, frame.clientId, result.file.id, result.rev);
+      if (result.changed) {
+        void unlinkFile(result.file.id, room);
+        emit(room, { t: "file.deleted", id: result.file.id, rev: result.rev });
+      }
+      return;
+    }
+
     case "channel.create": {
       const room = requireRoom(conn);
       const { channel, rev } = repo.insertChannel(room, frame.name);
@@ -207,6 +236,19 @@ export function emitPresence(roomId: string): void {
 
 function sendError(conn: Conn, code: ErrorCode, message: string, ref?: string): void {
   send(conn, { t: "error", code, message, ...(ref ? { ref } : {}) });
+}
+
+async function unlinkFile(fileId: string, roomId: string): Promise<void> {
+  try {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const { filesDir } = await import("../config");
+    const base = path.join(filesDir(), roomId, fileId);
+    await fs.rm(base, { force: true });
+    await fs.rm(`${base}.part`, { force: true });
+  } catch (error) {
+    log("warn", "file.unlink.failed", { room: roomId, file: fileId, error: String(error) });
+  }
 }
 
 function allow(conn: Conn): boolean {

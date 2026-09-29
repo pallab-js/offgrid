@@ -27,6 +27,21 @@ export interface MessageRecord {
   deletePending: boolean;
 }
 
+/** File metadata mirrored locally; blob cached when size < 32 MB (TRD §6). */
+export interface FileRecord {
+  id: string;
+  roomId: string;
+  deviceId: string;
+  name: Cipher;
+  mime: string;
+  size: number;
+  sha256: string | null;
+  createdAt: number;
+  deletedAt: number | null;
+  rev: number;
+  blob: Blob | null;
+}
+
 interface OffgridSchema extends DBSchema {
   messages: {
     key: string;
@@ -37,18 +52,29 @@ interface OffgridSchema extends DBSchema {
       "by-server": string;
     };
   };
+  files: {
+    key: string;
+    value: FileRecord;
+    indexes: { "by-room": string };
+  };
 }
 
 let dbPromise: Promise<IDBPDatabase<OffgridSchema>> | null = null;
 
 export function getDb(): Promise<IDBPDatabase<OffgridSchema>> {
   if (!dbPromise) {
-    dbPromise = openDB<OffgridSchema>("offgrid", 1, {
-      upgrade(db) {
-        const store = db.createObjectStore("messages", { keyPath: "uid" });
-        store.createIndex("by-channel", "channelId");
-        store.createIndex("by-client", "clientId");
-        store.createIndex("by-server", "serverId");
+    dbPromise = openDB<OffgridSchema>("offgrid", 2, {
+      upgrade(db, oldVersion) {
+        if (oldVersion < 1) {
+          const store = db.createObjectStore("messages", { keyPath: "uid" });
+          store.createIndex("by-channel", "channelId");
+          store.createIndex("by-client", "clientId");
+          store.createIndex("by-server", "serverId");
+        }
+        if (oldVersion < 2) {
+          const files = db.createObjectStore("files", { keyPath: "id" });
+          files.createIndex("by-room", "roomId");
+        }
       },
     });
   }

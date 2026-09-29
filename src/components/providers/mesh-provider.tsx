@@ -6,12 +6,21 @@ import { useMeshStore } from "@/stores/mesh";
 import { useSessionStore } from "@/stores/session";
 import { isMeshEvent, type MeshEvent, type ServerFrame } from "@/lib/protocol";
 import { useChatStore } from "@/stores/chat";
+import { useFilesStore } from "@/stores/files";
 
 function routeEvent(event: MeshEvent): void {
-  if (event.t === "msg.new") {
-    void useChatStore.getState().applyIncoming(event.msg);
-  } else {
-    useMeshStore.getState().applyEvent(event);
+  switch (event.t) {
+    case "msg.new":
+      void useChatStore.getState().applyIncoming(event.msg);
+      break;
+    case "file.new":
+      void useFilesStore.getState().applyIncoming(event.file, event.rev);
+      break;
+    case "file.deleted":
+      void useFilesStore.getState().markDeleted(event.id, event.rev);
+      break;
+    default:
+      useMeshStore.getState().applyEvent(event);
   }
 }
 
