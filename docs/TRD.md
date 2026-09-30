@@ -51,7 +51,7 @@ All responses `application/json; charset=utf-8`. Errors: `{ "error": { "code": s
 | `POST /api/rooms/:id/files` | raw stream | `{ fileId, rev }` | auth; headers: `X-File-Name` (URI-encoded ciphertext), `X-File-Iv` (URI-encoded IV), `X-File-Mime`, `X-File-Id` (client ULID, idempotent) |
 | `GET /api/rooms/:id/files/:fileId` | — | bytes | auth; supports `Range: bytes=a-b` → 206 + `Content-Range`; `HEAD` returns metadata only |
 | `DELETE /api/rooms/:id/files/:fileId` | — | `{ rev }` | auth; soft delete + unlink |
-| `GET /api/rooms/:id/export` | — | JSON dump of device's local data | auth; generated **client-side** from IndexedDB (hub export is optional stretch) |
+| `GET /api/rooms/:id/export` | — | — | **not implemented** (stretch cut); export is generated client-side in Settings from IndexedDB (`offgrid-export` v1) |
 
 Validation: zod on every JSON body; file headers sanitized (strip path separators, cap 255 chars). Unknown routes → Next 404.
 
@@ -67,7 +67,8 @@ Validation: zod on every JSON body; file headers sanitized (strip path separator
 ```
 
 - `ref` is echoed on `ack`/`error` so the client can settle an outbox entry.
-- Every frame validated with zod (`src/lib/protocol`); invalid → `error { code: "BAD_FRAME" }`, never crash the hub.
+- Hub validates 100 % of inbound frames/bodies with zod (`src/lib/protocol`); invalid → `error { code: "BAD_FRAME" }`, never crash the hub.
+- Client validates every inbound `s2c` frame with the same schemas, loaded **lazily** (`import("@/lib/protocol/frames")` on first message) so zod stays out of first-load JS (N7). Outbound frames are compile-time typed; the hub re-validates them.
 - Text frames only; max `MAX_FRAME_BYTES`. Binary frames rejected.
 
 ### 4.2 Client → server frames
@@ -177,18 +178,30 @@ CREATE TABLE IF NOT EXISTS rev_seq (v INTEGER NOT NULL);  -- single row, increme
 
 Migrations: idempotent `CREATE TABLE IF NOT EXISTS` in `schema.ts` with a `meta(schema_version)` table for future ALTERs. **DB file is gitignored**; schema lives in code.
 
-## 6. Client data (IndexedDB) — database `offgrid` v1
+## 6. Client data
 
-| Store | Key | Contents |
+### 6.1 IndexedDB — database `offgrid` v3
+
+| Store | Key / index | Contents |
 |---|---|---|
-| `meta` | key | `deviceId`, `profile`, `roomId`, `cursor`, `mapImage` calibration refs |
-| `messages` | `id` (clientId), index `channelId+createdAt` | full decrypted message rows + sync status |
-| `outbox` | `clientId` | frames awaiting ack (raw sealed payloads) |
-| `files` | `id` | metadata + cached blob when `size < 32 MB` |
-| `notes` / `waypoints` / `progress` / `sos` | id | decrypted mirrors |
-| `channels` | id | channel list |
+| `messages` | `uid`; idx `by-channel`, `by-client`, `by-server` | sealed body `{ct,iv}` + sync status (`pending`/`synced`/`failed`), reply/attachments, tombstones |
+| `files` | `id`; idx `by-room` | sealed name, mime/size/sha256, cached blob when `size < 32 MB`, tombstones |
+| `notes` | `id`; idx `by-room` | sealed title/body, LWW fields (`updatedAt`, `updatedBy`, `rev`, `deletedAt`) |
+| `waypoints` | `id`; idx `by-room` | sealed label, lat/lng **or** grid x/y, color, LWW fields |
+| `progress` | `roomId:itemId`; idx `by-room` | checklist item checked state, LWW fields |
+| `sos` | `id`; idx `by-room` | sealed note, lat/lng, `active`/`clearedAt`, rev |
+| `meta` | `key` | device-local only: `map` (image blob + 2-point calibration), `battery` (manual %) |
+| `outbox` | `clientId` | raw client frames + `attempts` + `failed` flag (generic sync outbox for notes/checklist/map/SOS/beacon) |
 
-Write discipline: UI writes to IDB first, then socket; server ack confirms and stamps `rev`. Reducer applying server events is idempotent (`if (existing.rev >= incoming.rev) skip`).
+Channels are **not** persisted — they arrive in the `joined` frame. Sealed payloads decrypt in memory via the cached room key (`openText`).
+
+### 6.2 Web storage
+
+`localStorage["offgrid.session.v1"]` holds `deviceId`, profile, room membership, token, cursor. `sessionStorage["offgrid.roomkey.v1"]` caches the raw room key **for the tab session only** (cleared on leave/wipe).
+
+### 6.3 Write discipline
+
+UI writes to IDB first, then the outbox/socket; server ack confirms and stamps `rev`. Reducers applying server events are idempotent and LWW-safe: skip only when `existing.rev > incoming.rev` (equal rev applies — the authoritative overwrite wins); SOS clear always wins.
 
 ## 7. Non-functional requirements
 
@@ -205,9 +218,11 @@ Write discipline: UI writes to IDB first, then socket; server ack confirms and s
 | N9 | Offline | with hub stopped: shell + history render; composer queues; reconnect flushes |
 | N10 | Determinism | `pnpm lint && pnpm typecheck && pnpm test` green; no network calls at runtime |
 
+**Offline shell:** `public/sw.js` (registered production-only, scope `/`, `updateViaCache: "none"`) does network-first for navigations with cache fallback, cache-first for `/_next/static`, stale-while-revalidate for same-origin statics; `/api` and `/ws` are never intercepted; caches are namespaced `offgrid-v1-*` and orphaned versions are dropped on activate. PWA manifest via `src/app/manifest.ts`. UI: offline banner with outbox pending/failed counts + manual retry (Settings provides export/wipe).
+
 ## 8. Error handling & logging
 
-- **Client:** socket errors surface as a `StatusPill` state (`live / reconnecting / offline`); outbox entries retry with backoff and expose `failed` only after 5 attempts (user can retry manually). Feature errors render inline (input-level), never global crash — route-level `error.tsx` boundaries everywhere.
+- **Client:** socket errors surface as a `StatusPill` state (`live / reconnecting / offline`); outbox entries retry with exponential backoff and are marked `failed` after 8 attempts (kept for manual retry, never silently dropped while retryable). Feature errors render inline (input-level), never global crash — route-level `error.tsx` boundaries everywhere.
 - **Server:** try/catch per frame → `error` reply + log; uncaught exceptions logged and process kept alive (single-process hub: never `process.exit` on request errors). Log line format: `ISO level event room= device= detail` → `data/logs/hub.log` (size-rotated, 5 × 2 MB).
 - **Never log** passphrases, room keys, plaintext bodies, or tokens.
 

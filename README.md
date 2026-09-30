@@ -53,6 +53,7 @@ pnpm start
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm test` | vitest unit suite |
 | `pnpm exec tsx scripts/smoke-p1.ts` | end-to-end smoke against a running hub |
+| `pnpm exec tsx scripts/n5-rate-limit.ts` | N5 acceptance: rate-limit flood + bystander check |
 
 ### Troubleshooting
 
