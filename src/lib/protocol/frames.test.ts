@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { c2sSchema, s2cSchema, isMeshEvent } from "./frames";
+import { c2sSchema, s2cSchema } from "./frames";
+import { isMeshEvent } from "./constants";
 
 describe("c2s frames", () => {
   it("accepts a join frame", () => {

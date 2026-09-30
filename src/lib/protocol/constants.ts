@@ -1,3 +1,5 @@
+import type { MeshEvent } from "./frames";
+
 /** Shared protocol constants (client + server import this module). */
 
 export const WS_PATH = "/ws";
@@ -39,3 +41,23 @@ export const ERROR_CODES = [
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
+
+export const EVENT_TYPES: ReadonlySet<string> = new Set<string>([
+  "channel.new",
+  "msg.new",
+  "msg.deleted",
+  "note.upsert",
+  "note.deleted",
+  "check.update",
+  "wp.upsert",
+  "wp.deleted",
+  "sos.raised",
+  "sos.cleared",
+  "file.new",
+  "file.deleted",
+  "beacon.new",
+]);
+
+export function isMeshEvent(frame: { t: string }): frame is MeshEvent {
+  return EVENT_TYPES.has(frame.t);
+}

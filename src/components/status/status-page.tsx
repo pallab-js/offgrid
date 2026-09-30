@@ -136,7 +136,7 @@ export function StatusPage() {
                 value={manualBattery}
                 onChange={(e) => applyManual(e.target.value)}
                 placeholder="0–100"
-                className="w-24 px-2 py-1"
+                className="w-24 min-h-[44px] px-2 py-1"
                 aria-label="Manual battery percent"
               />
             </label>

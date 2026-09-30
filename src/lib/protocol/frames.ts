@@ -150,26 +150,6 @@ export type MeshEvent = z.infer<typeof eventSchema>;
 
 export type EventType = MeshEvent["t"];
 
-const EVENT_TYPES: ReadonlySet<string> = new Set<EventType>([
-  "channel.new",
-  "msg.new",
-  "msg.deleted",
-  "note.upsert",
-  "note.deleted",
-  "check.update",
-  "wp.upsert",
-  "wp.deleted",
-  "sos.raised",
-  "sos.cleared",
-  "file.new",
-  "file.deleted",
-  "beacon.new",
-]);
-
-export function isMeshEvent(frame: { t: string }): frame is MeshEvent {
-  return EVENT_TYPES.has(frame.t);
-}
-
 /* ---------------------------------------------- server → client (control) */
 
 const errorCode = z.enum(ERROR_CODES);

@@ -116,6 +116,7 @@ export interface OutboxEntry {
   frame: ClientFrame & { clientId: string };
   attempts: number;
   createdAt: number;
+  failed?: boolean;
 }
 
 interface OffgridSchema extends DBSchema {
@@ -165,6 +166,13 @@ export function getDb(): Promise<IDBPDatabase<OffgridSchema>> {
     });
   }
   return dbPromise;
+}
+
+export async function closeDb(): Promise<void> {
+  if (!dbPromise) return;
+  const db = await dbPromise;
+  db.close();
+  dbPromise = null;
 }
 
 export type Db = IDBPDatabase<OffgridSchema>;

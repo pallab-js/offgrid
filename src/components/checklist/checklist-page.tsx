@@ -101,7 +101,7 @@ export function ChecklistPage() {
           placeholder="Search checklists and guides"
           aria-label="Search checklists and guides"
         />
-        <div className="flex flex-wrap gap-2" aria-label="Checklist views">
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Checklist views">
           <Button
             variant={tab === "checklists" ? "primary" : "secondary"}
             aria-pressed={tab === "checklists"}
@@ -158,27 +158,30 @@ export function ChecklistPage() {
                       const entry = progress[item.id];
                       const inputId = `${list.id}-${item.id}`;
                       return (
-                        <li key={item.id} className="flex items-start gap-3">
-                          <input
-                            id={inputId}
-                            type="checkbox"
-                            className="size-4 accent-black"
-                            checked={entry?.checked ?? false}
-                            onChange={(e) =>
-                              void setItem(item.id, e.target.checked)
-                            }
-                          />
-                          <div className="flex min-w-0 flex-col gap-1.5">
-                            <label htmlFor={inputId} className="text-body-sm">
-                              {item.label}
-                            </label>
-                            {entry && entry.updatedBy !== deviceId ? (
-                              <span className="caption text-ink">
-                                checked {relative(entry.updatedAt)} by{" "}
-                                {nameOf(entry.updatedBy)}
-                              </span>
-                            ) : null}
-                          </div>
+                        <li key={item.id}>
+                          <label
+                            htmlFor={inputId}
+                            className="flex min-h-[44px] items-start gap-3 py-1"
+                          >
+                            <input
+                              id={inputId}
+                              type="checkbox"
+                              className="mt-1 size-4 shrink-0 accent-black"
+                              checked={entry?.checked ?? false}
+                              onChange={(e) =>
+                                void setItem(item.id, e.target.checked)
+                              }
+                            />
+                            <span className="flex min-w-0 flex-col gap-1.5">
+                              <span className="text-body-sm">{item.label}</span>
+                              {entry && entry.updatedBy !== deviceId ? (
+                                <span className="caption text-ink">
+                                  checked {relative(entry.updatedAt)} by{" "}
+                                  {nameOf(entry.updatedBy)}
+                                </span>
+                              ) : null}
+                            </span>
+                          </label>
                         </li>
                       );
                     })}
@@ -207,7 +210,7 @@ export function ChecklistPage() {
                   onClick={() =>
                     setOpenGuide(openGuide === guide.id ? null : guide.id)
                   }
-                  className="flex w-full items-center justify-between gap-3 text-left"
+                  className="flex min-h-[44px] w-full items-center justify-between gap-3 text-left"
                 >
                   <span className="text-card-title">{guide.title}</span>
                   <span className="caption text-ink">
@@ -230,7 +233,7 @@ export function ChecklistPage() {
                             onClick={() =>
                               setOpenSection(openSection === key ? null : key)
                             }
-                            className="text-left text-card-title"
+                            className="min-h-[44px] w-full text-left text-card-title"
                           >
                             {section.heading}
                           </button>

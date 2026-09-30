@@ -221,7 +221,7 @@ export function JoinFlow() {
                         setError(null);
                       }}
                       className={cn(
-                        "min-h-[40px] rounded-pill px-4 py-1.5 text-button-sm font-medium transition-colors",
+                        "min-h-[44px] rounded-pill px-4 py-1.5 text-button-sm font-medium transition-colors",
                         mode === value
                           ? "bg-primary text-on-primary"
                           : "bg-canvas text-ink",
@@ -304,7 +304,7 @@ export function JoinFlow() {
                         )}
                         style={{ backgroundColor: value, color: onColor(value) }}
                       >
-                        {color === value ? "✓" : ""}
+                        <span aria-hidden="true">{color === value ? "✓" : ""}</span>
                       </button>
                     ))}
                   </div>

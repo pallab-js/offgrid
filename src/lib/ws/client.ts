@@ -1,16 +1,14 @@
 "use client";
 
-import {
-  HEARTBEAT_MS,
-  REQUEST_TIMEOUT_MS,
-  WS_PATH,
-  c2sSchema,
-  s2cSchema,
-  type ClientFrame,
-  type Device,
-  type ErrorCode,
-  type ServerFrame,
-} from "@/lib/protocol";
+import { HEARTBEAT_MS, REQUEST_TIMEOUT_MS, WS_PATH } from "@/lib/protocol/constants";
+import type { ClientFrame, Device, ErrorCode, ServerFrame } from "@/lib/protocol";
+
+let frameSchemas: Promise<typeof import("@/lib/protocol/frames")> | null = null;
+
+function loadFrameSchemas(): Promise<typeof import("@/lib/protocol/frames")> {
+  frameSchemas ??= import("@/lib/protocol/frames");
+  return frameSchemas;
+}
 import type { LinkStatus } from "@/stores/mesh";
 
 export interface Ack {
@@ -98,12 +96,7 @@ class MeshSocket {
 
   send(frame: ClientFrame): boolean {
     if (this.ws?.readyState !== WebSocket.OPEN) return false;
-    const parsed = c2sSchema.safeParse(frame);
-    if (!parsed.success) {
-      console.warn("[ws] refused invalid outbound frame", frame.t);
-      return false;
-    }
-    this.ws.send(JSON.stringify(parsed.data));
+    this.ws.send(JSON.stringify(frame));
     return true;
   }
 
@@ -175,13 +168,19 @@ class MeshSocket {
     } catch {
       return;
     }
-    const parsed = s2cSchema.safeParse(json);
-    if (!parsed.success) {
-      console.warn("[ws] invalid server frame", json);
-      return;
-    }
-    const frame = parsed.data;
+    void loadFrameSchemas()
+      .then(({ s2cSchema }) => s2cSchema.safeParse(json))
+      .then((parsed) => {
+        if (!parsed.success) {
+          console.warn("[ws] invalid server frame", json);
+          return;
+        }
+        this.dispatchFrame(parsed.data);
+      })
+      .catch(() => undefined);
+  }
 
+  private dispatchFrame(frame: ServerFrame): void {
     if (frame.t === "joined") {
       this.startHeartbeat();
       this.emitStatus("online");

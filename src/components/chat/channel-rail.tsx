@@ -45,7 +45,7 @@ export function ChannelRail() {
   }
 
   return (
-    <aside className="flex shrink-0 flex-col gap-4 md:w-[240px]">
+    <aside className="flex w-full min-w-0 shrink-0 flex-col gap-4 md:w-[240px]">
       <Eyebrow className="text-ink">Channels</Eyebrow>
       <ul className="flex gap-1.5 overflow-x-auto pb-1 md:flex-col md:overflow-visible">
         {channels.map((channel) => (
@@ -55,7 +55,7 @@ export function ChannelRail() {
               onClick={() => setActive(channel.id)}
               aria-current={active === channel.id ? "true" : undefined}
               className={cn(
-                "inline-flex min-h-[40px] w-max items-center gap-2 rounded-pill px-4 py-1.5 text-button-sm font-medium transition-colors md:w-full",
+                "inline-flex min-h-[44px] w-max items-center gap-2 rounded-pill px-4 py-1.5 text-button-sm font-medium transition-colors md:w-full",
                 active === channel.id
                   ? "bg-primary text-on-primary"
                   : "bg-canvas text-ink hover:bg-surface-soft",

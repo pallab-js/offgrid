@@ -1,4 +1,4 @@
-import { PBKDF2_ITERATIONS } from "@/lib/protocol";
+import { PBKDF2_ITERATIONS } from "@/lib/protocol/constants";
 import { b64ToBytes, bytesToB64 } from "./base64";
 
 const text = new TextEncoder();

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "@fontsource-variable/inter";
 import "@fontsource/jetbrains-mono/400.css";
 import "./globals.css";
+import { SwRegister } from "@/components/providers/sw-register";
 
 export const metadata: Metadata = {
   title: {
@@ -16,7 +17,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className="h-full antialiased">
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <SwRegister />
+        {children}
+      </body>
     </html>
   );
 }

@@ -280,7 +280,7 @@ function MessageRow({
               <button
                 type="button"
                 onClick={() => void retryMessage(msg.uid)}
-                className="inline-flex items-center gap-1 rounded-pill border border-hairline px-2 py-0.5 hover:border-ink/40"
+                className="inline-flex items-center gap-1 rounded-pill border border-hairline px-3 py-1 caption hover:border-ink/40 min-h-[44px]"
               >
                 <RotateCcw className="size-3" aria-hidden="true" />
                 retry
@@ -292,7 +292,7 @@ function MessageRow({
               type="button"
               onClick={onReply}
               aria-label="Reply to message"
-              className="inline-flex size-7 items-center justify-center rounded-full text-ink hover:bg-surface-soft"
+              className="inline-flex size-11 items-center justify-center rounded-full text-ink hover:bg-surface-soft xs:size-7"
             >
               <CornerUpLeft className="size-3.5" aria-hidden="true" />
             </button>
@@ -301,7 +301,7 @@ function MessageRow({
                 type="button"
                 onClick={() => void deleteMessage(msg)}
                 aria-label="Delete message"
-                className="inline-flex size-7 items-center justify-center rounded-full text-ink hover:bg-surface-soft"
+                className="inline-flex size-11 items-center justify-center rounded-full text-ink hover:bg-surface-soft xs:size-7"
               >
                 <Trash2 className="size-3.5" aria-hidden="true" />
               </button>
@@ -340,7 +340,7 @@ function AttachmentChip({ fileId, isOwn }: { fileId: string | null; isOwn: boole
         disabled={!item || pct !== null}
         onClick={() => item && void download(item)}
         aria-label="Download attachment"
-        className="inline-flex size-7 shrink-0 items-center justify-center rounded-full hover:bg-surface-soft disabled:opacity-40"
+        className="inline-flex size-11 shrink-0 items-center justify-center rounded-full hover:bg-surface-soft disabled:opacity-40 xs:size-7"
       >
         <Download className="size-3.5" aria-hidden="true" />
       </button>
@@ -433,7 +433,7 @@ function Composer({
             type="button"
             onClick={onCancelReply}
             aria-label="Cancel reply"
-            className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-ink hover:bg-hairline-soft"
+            className="inline-flex size-11 shrink-0 items-center justify-center rounded-full text-ink hover:bg-hairline-soft xs:size-8"
           >
             <X className="size-4" aria-hidden="true" />
           </button>
@@ -478,7 +478,7 @@ function Composer({
               void submit();
             }
           }}
-          className="max-h-[160px] min-h-[48px] w-full resize-none rounded-2xl border border-hairline bg-canvas px-4 py-3 text-body-sm text-ink placeholder:text-ink/50 focus:border-ink focus:outline-none"
+          className="max-h-[160px] min-h-[48px] w-full resize-none rounded-2xl border border-hairline bg-canvas px-4 py-3 text-body-sm text-ink placeholder:text-ink focus:border-ink"
         />
         <Button
           size="md"

@@ -104,6 +104,9 @@
   --font-weight-540: 540;
   --font-weight-700: 700;
 
+  /* --- Breakpoints (DESIGN.md: Mobile 560px, Mobile-L 768px, Tablet 960px) - */
+  --breakpoint-xs: 560px;
+
   /* --- Radii ------------------------------------------------------------- */
   --radius-xs: 2px;
   --radius-sm: 6px;
@@ -147,8 +150,12 @@
 
   /* Focus is a ring, never a fill change (DESIGN.md inputs). */
   :focus-visible {
-    outline: 2px solid var(--color-ink);
+    outline: 2px solid var(--color-primary);
     outline-offset: 2px;
+  }
+
+  :focus:not(:focus-visible) {
+    outline: none;
   }
 
   ::selection {
@@ -239,7 +246,8 @@
 @media (prefers-reduced-motion: reduce) {
   .animate-marquee,
   .animate-pulse-soft,
-  .animate-sos-strobe {
+  .animate-sos-strobe,
+  .animate-spin {
     animation: none;
   }
 }

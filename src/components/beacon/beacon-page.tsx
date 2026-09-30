@@ -124,14 +124,14 @@ export function BeaconPage() {
           <div className="flex flex-wrap items-center gap-2">
             <span className="caption text-ink">Presets</span>
             {Object.entries(MORSE_PRESETS).map(([name, value]) => (
-              <Pill
+              <button
                 key={name}
-                tone="outline"
-                className="cursor-pointer bg-canvas"
+                type="button"
                 onClick={() => setText(value)}
+                className="inline-flex min-h-[44px] items-center gap-1.5 rounded-pill border border-hairline bg-canvas px-3 py-1 caption whitespace-nowrap text-ink hover:bg-surface-soft"
               >
                 {value}
-              </Pill>
+              </button>
             ))}
           </div>
 
@@ -159,7 +159,7 @@ export function BeaconPage() {
               max={40}
               value={wpm}
               onChange={(e) => setWpm(Number(e.target.value))}
-              className="h-2 w-full accent-black"
+              className="h-11 w-full accent-black"
               aria-label="Words per minute"
             />
           </label>
@@ -180,7 +180,7 @@ export function BeaconPage() {
               <Send className="size-4" aria-hidden="true" />
               {shared ? "Shared" : "Share to room"}
             </Button>
-            <label className="inline-flex items-center gap-2 caption">
+            <label className="inline-flex min-h-[44px] items-center gap-2 caption">
               <input
                 type="checkbox"
                 checked={audioOn}
@@ -257,7 +257,7 @@ export function BeaconPage() {
                   <button
                     type="button"
                     className={cn(
-                      "rounded-pill border border-hairline px-3 py-1 caption",
+                      "inline-flex min-h-[44px] items-center rounded-pill border border-hairline px-3 py-1 caption",
                       "hover:border-ink/40",
                     )}
                     onClick={() => setText(entry.text)}
@@ -289,7 +289,7 @@ export function BeaconPage() {
           >
             {flash ? "•" : "·"}
           </span>
-          <div className="absolute bottom-12 flex items-center gap-4">
+          <div className="absolute bottom-12 flex max-w-[calc(100%-2rem)] flex-wrap items-center justify-center gap-4 px-4">
             <span
               className={cn("caption", flash ? "text-ink" : "text-inverse-ink")}
             >

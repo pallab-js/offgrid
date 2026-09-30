@@ -385,7 +385,7 @@ export function MapPage() {
         </p>
       </header>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_340px]">
         <div
           className="relative aspect-[4/3] w-full cursor-crosshair overflow-hidden rounded-xl border border-hairline bg-block-navy"
           onClick={onCanvasClick}
@@ -419,7 +419,7 @@ export function MapPage() {
                   setSelectedId(wp.id);
                 }}
                 className={cn(
-                  "absolute size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-canvas shadow",
+                  "absolute size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-canvas shadow after:absolute after:-inset-3.5 after:block after:content-['']",
                   selectedId === wp.id && "ring-2 ring-canvas",
                 )}
                 style={{
@@ -432,7 +432,7 @@ export function MapPage() {
           })}
 
           {pending ? (
-            <div className="pointer-events-none absolute left-3 top-3 rounded-pill border border-hairline bg-canvas px-3 py-1">
+            <div className="pointer-events-none absolute left-3 top-3 max-w-[calc(100%-1.5rem)] rounded-pill border border-hairline bg-canvas px-3 py-1">
               <span className="caption text-ink">
                 Pending waypoint at {Math.round(pending.x)},
                 {Math.round(pending.y)}

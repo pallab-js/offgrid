@@ -29,6 +29,7 @@ interface SessionState {
     cursor?: number;
   }) => void;
   setCursor: (cursor: number) => void;
+  leaveRoom: () => void;
   reset: () => void;
 }
 
@@ -145,6 +146,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ cursor });
     const saved = readPersisted();
     if (saved) writePersisted({ ...saved, cursor });
+  },
+
+  leaveRoom: () => {
+    try {
+      sessionStorage.removeItem(KEY_CACHE);
+    } catch {
+      /* ignore */
+    }
+    const saved = readPersisted();
+    if (saved) writePersisted({ ...saved, roomId: "", roomName: "", token: "", cursor: 0 });
+    set({
+      roomId: null,
+      roomName: null,
+      token: null,
+      cursor: 0,
+      roomKeyB64: null,
+    });
   },
 
   reset: () => {

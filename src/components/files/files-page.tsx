@@ -116,7 +116,7 @@ export function FilesPage() {
           <Eyebrow className="text-ink">Files</Eyebrow>
           <h1 className="text-display-lg">Shared files</h1>
         </div>
-        <div className="flex gap-2" aria-label="Filter files">
+        <div className="flex gap-2" role="group" aria-label="Filter files">
           {(["all", "cached", "mine"] as const).map((key) => (
             <button
               key={key}
@@ -124,7 +124,7 @@ export function FilesPage() {
               onClick={() => setFilter(key)}
               aria-pressed={filter === key}
               className={cn(
-                "inline-flex min-h-[40px] items-center rounded-pill px-4 py-1.5 text-button-sm font-medium",
+                "inline-flex min-h-[44px] items-center rounded-pill px-4 py-1.5 text-button-sm font-medium",
                 filter === key
                   ? "bg-primary text-on-primary"
                   : "bg-canvas text-ink hover:bg-surface-soft",
@@ -255,7 +255,7 @@ export function FilesPage() {
                       type="button"
                       disabled={!kind}
                       onClick={() => setPreview(file)}
-                      className="block max-w-full truncate text-left text-card-title disabled:cursor-default"
+                      className="block min-h-[44px] max-w-full truncate text-left text-card-title disabled:cursor-default"
                       title={file.name ?? file.id}
                     >
                       {file.name ?? `file-${file.id.slice(-6)}`}
@@ -371,7 +371,7 @@ function PreviewModal({ file, onClose }: { file: FileView; onClose: () => void }
             type="button"
             onClick={onClose}
             aria-label="Close preview"
-            className="inline-flex size-9 items-center justify-center rounded-full text-ink hover:bg-surface-soft"
+            className="inline-flex size-10 items-center justify-center rounded-full text-ink hover:bg-surface-soft"
           >
             <X className="size-4" aria-hidden="true" />
           </button>

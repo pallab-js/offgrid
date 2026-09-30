@@ -65,7 +65,7 @@ export function SosTimeline() {
               <button
                 type="button"
                 onClick={() => void clear(event.id)}
-                className="ml-auto rounded-pill border border-hairline px-3 py-1 caption hover:border-ink/40"
+                className="ml-auto inline-flex min-h-[44px] items-center rounded-pill border border-hairline px-3 py-1 caption hover:border-ink/40"
               >
                 Clear
               </button>

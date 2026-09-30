@@ -9,8 +9,8 @@ export function TextInput({
     <input
       className={cn(
         "w-full rounded-md border border-hairline bg-canvas px-3.5 py-3 " +
-          "text-body text-ink placeholder:text-ink/50 " +
-          "focus:border-ink focus:outline-none",
+          "text-body text-ink placeholder:text-ink " +
+          "focus:border-ink",
         className,
       )}
       {...props}
@@ -26,8 +26,8 @@ export function TextArea({
     <textarea
       className={cn(
         "w-full rounded-md border border-hairline bg-canvas px-3.5 py-3 " +
-          "text-body text-ink placeholder:text-ink/50 resize-y " +
-          "focus:border-ink focus:outline-none",
+          "text-body text-ink placeholder:text-ink resize-y " +
+          "focus:border-ink",
         className,
       )}
       {...props}
