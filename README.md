@@ -2,7 +2,7 @@
 
 Real-time messaging, file sharing and survival tooling for teams **beyond the reach of the internet**. One machine on the local network becomes the hub; everyone else joins from any browser. No cloud, no accounts, no external services.
 
-> Status: **v0.1.0-alpha · in development.** See [docs/IMPLEMENTATION-PLAN.md](docs/IMPLEMENTATION-PLAN.md) for the current phase.
+> Status: **v0.1.0-alpha.** Local-only alpha — run the hub yourself and join from the LAN. See [docs/IMPLEMENTATION-PLAN.md](docs/IMPLEMENTATION-PLAN.md) for the roadmap.
 
 ## Why
 
@@ -92,4 +92,4 @@ No cloud deployment, Docker, internet relaying, native apps, voice/video, or enc
 
 ## License
 
-TBD (repository owner to choose before the remote is published).
+[MIT](LICENSE) — see [LICENSE](LICENSE).

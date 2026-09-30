@@ -137,10 +137,10 @@
 
 ## 3. Definition of Done (v1)
 
-- [ ] PRD must-haves all accepted via §5 checklist
-- [ ] TRD N1–N10 verified (P6: N5 rate-limit 341×`RATE_LIMITED` + bystander unaffected; N6 start < 1 s; N7 167 KB gz app routes; N4 fuzz in smoke; N10 sweep green — N1/N2/N3/N8/N9 still need the two-device run)
+- [x] PRD must-haves all accepted via §5 checklist (user sign-off 2026-09-30)
+- [x] TRD N1–N10 verified — P6 measurements: N5 rate-limit 341×`RATE_LIMITED` + bystander unaffected; N6 start < 1 s; N7 167 KB gz; N4 fuzz in smoke; N10 sweep green; N1/N2/N3/N8/N9 demonstrated in the two-device run (user sign-off 2026-09-30)
 - [x] Lint/typecheck/test green; production build boots (verified P6: build 19 s, `pnpm start` healthy in 0.8 s, production smoke 49/49)
-- [ ] Docs match code; README sufficient for a new user to run hub + join from a second device in < 5 minutes (TRD reconciled P6; needs a fresh-reader pass after the two-device run)
+- [x] Docs match code; README sufficient for a new user to run hub + join from a second device in < 5 minutes (TRD reconciled + README walkthrough; user sign-off 2026-09-30)
 - [x] No runtime network calls beyond the hub origin; `data/` gitignored (grep-audited P6)
 
 ## 4. Stretch queue (only after DoD or explicit approval)
