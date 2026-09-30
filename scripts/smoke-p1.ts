@@ -7,6 +7,13 @@ import { deriveRoomKey, computeProof } from "../src/lib/crypto/room";
 import { randomB64 } from "../src/lib/crypto/base64";
 import { ulid } from "../src/lib/utils/id";
 import { c2sSchema, s2cSchema, type ServerFrame } from "../src/lib/protocol";
+import { FILE_CHUNK_BYTES, fileCipherSize } from "../src/lib/protocol/constants";
+import {
+  decryptFileFrameWith,
+  encryptFileChunkWith,
+  frameCount,
+  frameOffset,
+} from "../src/lib/crypto/file";
 
 const BASE = process.env.HUB ?? "http://localhost:3000";
 const results: Array<[string, boolean, string?]> = [];
@@ -372,7 +379,195 @@ async function main(): Promise<void> {
     beaconEvt.t === "beacon.new" && beaconEvt.beacon.wpm === 18,
   );
 
-  // 12. invalid frame rejected without dropping the socket
+  // 12. P7 reactions: add, broadcast, remove
+  const reactMsgClientId = ulid();
+  a.send({ t: "msg.send", clientId: reactMsgClientId, channelId: general.id, kind: "text", body, attachments: [] });
+  const reactMsgAck = await a.waitFor((f) => f.t === "ack" && f.ref === reactMsgClientId, 3000, "react msg ack");
+  check("reaction target msg acked", reactMsgAck.t === "ack");
+
+  const reactRef = ulid();
+  a.send({ t: "msg.react", clientId: reactRef, id: reactMsgAck.t === "ack" ? reactMsgAck.id : "missing", emoji: "👍", on: true });
+  const reactAck = await a.waitFor((f) => f.t === "ack" && f.ref === reactRef, 3000, "react ack");
+  check("msg.react acked", reactAck.t === "ack");
+  const reacted = await b.waitFor(
+    (f) => f.t === "msg.new" && reactMsgAck.t === "ack" && f.msg.id === reactMsgAck.id && f.msg.reactions.length === 1,
+    3000,
+    "reaction to B",
+  );
+  check(
+    "B receives reaction",
+    reacted.t === "msg.new" && reacted.msg.reactions[0]?.emoji === "👍" && reacted.msg.reactions[0]?.deviceId === deviceA.id,
+  );
+
+  const unreactRef = ulid();
+  a.send({ t: "msg.react", clientId: unreactRef, id: reactMsgAck.t === "ack" ? reactMsgAck.id : "missing", emoji: "👍", on: false });
+  const unreactAck = await a.waitFor((f) => f.t === "ack" && f.ref === unreactRef, 3000, "unreact ack");
+  check("reaction removal acked", unreactAck.t === "ack");
+  const unreacted = await b.waitFor(
+    (f) =>
+      f.t === "msg.new" &&
+      reactMsgAck.t === "ack" &&
+      unreactAck.t === "ack" &&
+      f.msg.id === reactMsgAck.id &&
+      f.msg.reactions.length === 0 &&
+      f.rev >= unreactAck.rev,
+    3000,
+    "removal to B",
+  );
+  check("B receives reaction removal", unreacted.t === "msg.new");
+
+  // 13. P7 read cursors: broadcast + stale suppression + sync replay
+  const readAt = Date.now();
+  a.send({ t: "msg.read", channelId: general.id, at: readAt });
+  const readEvt = await b.waitFor(
+    (f) => f.t === "channel.read" && f.deviceId === deviceA.id,
+    3000,
+    "channel.read",
+  );
+  check(
+    "B receives channel.read",
+    readEvt.t === "channel.read" && readEvt.at === readAt && readEvt.channelId === general.id,
+  );
+
+  const bReadCount = b.frames.filter((f) => f.t === "channel.read").length;
+  a.send({ t: "msg.read", channelId: general.id, at: readAt - 60_000 });
+  await new Promise((r) => setTimeout(r, 300));
+  check(
+    "stale read cursor not rebroadcast",
+    b.frames.filter((f) => f.t === "channel.read").length === bReadCount,
+  );
+
+  a.send({ t: "sync.pull", cursor: 0 });
+  const readReplay = await a.waitFor(
+    (f) => f.t === "sync.batch" && f.events.some((e) => e.t === "channel.read"),
+    3000,
+    "read replay",
+  );
+  check("read cursor replays via sync.pull", readReplay.t === "sync.batch");
+
+  // 14. P7 hub export endpoint
+  const exported = await api(`/api/rooms/${roomId}/export`, {
+    headers: { authorization: `Bearer ${tokenA}` },
+  });
+  const dump = (await exported.json()) as {
+    format?: string;
+    messages?: Array<{ id: string; reactions: unknown[] }>;
+    reads?: unknown[];
+    files?: Array<{ id: string; enc?: string }>;
+  };
+  check("GET export → 200", exported.status === 200 && dump.format === "offgrid-hub-export");
+  check(
+    "export carries messages, reads, files",
+    (dump.messages?.length ?? 0) > 0 && (dump.reads?.length ?? 0) >= 1 && (dump.files?.length ?? 0) >= 1,
+    `messages=${dump.messages?.length} reads=${dump.reads?.length} files=${dump.files?.length}`,
+  );
+  const noAuthExport = await api(`/api/rooms/${roomId}/export`);
+  check("export without token → 401", noAuthExport.status === 401, `status=${noAuthExport.status}`);
+
+  // 15. P7 encrypted file bytes at rest: multipart upload, download, decrypt
+  const encFileId = ulid();
+  const plainBytes = new Uint8Array(FILE_CHUNK_BYTES + 1234);
+  for (let i = 0; i < plainBytes.length; i++) plainBytes[i] = (i * 17 + 3) & 0xff;
+  const encFrames: Uint8Array[] = [];
+  for (let i = 0; i < frameCount(plainBytes.length); i++) {
+    const start = i * FILE_CHUNK_BYTES;
+    encFrames.push(
+      await encryptFileChunkWith(
+        key,
+        encFileId,
+        i,
+        plainBytes.subarray(start, Math.min(start + FILE_CHUNK_BYTES, plainBytes.length)),
+      ),
+    );
+  }
+  const encCipher = Buffer.concat(encFrames.map((f) => Buffer.from(f)));
+  check(
+    "ciphertext size matches protocol math",
+    encCipher.length === fileCipherSize(plainBytes.length),
+    `cipher=${encCipher.length}`,
+  );
+
+  const encHeaders = {
+    authorization: `Bearer ${tokenA}`,
+    "content-type": "application/octet-stream",
+    "x-file-id": encFileId,
+    "x-file-name": encodeURIComponent("ZW5jLW5hbWUtY3Q="),
+    "x-file-iv": encodeURIComponent("aXZpdg=="),
+    "x-file-mime": "application/octet-stream",
+    "x-enc": "gcm1",
+    "x-plain-size": String(plainBytes.length),
+  };
+  const splitAt = encFrames[0]!.length;
+  const part0 = await api(`/api/rooms/${roomId}/files`, {
+    method: "POST",
+    headers: { ...encHeaders, "x-part": "0", "x-more": "1" },
+    body: encCipher.subarray(0, splitAt),
+  });
+  check("encrypted part 0 → 200", part0.status === 200, `status=${part0.status}`);
+
+  const part1 = await api(`/api/rooms/${roomId}/files`, {
+    method: "POST",
+    headers: { ...encHeaders, "x-part": "1", "x-more": "0" },
+    body: encCipher.subarray(splitAt),
+  });
+  check("encrypted part 1 → 201", part1.status === 201, `status=${part1.status}`);
+  const encMeta = (await part1.json()) as { size: number; enc: string; sha256: string };
+  check(
+    "encrypted upload reports plaintext size + gcm1",
+    encMeta.size === plainBytes.length && encMeta.enc === "gcm1",
+    `size=${encMeta.size} enc=${encMeta.enc}`,
+  );
+
+  const encRetry = await api(`/api/rooms/${roomId}/files`, {
+    method: "POST",
+    headers: { ...encHeaders, "x-part": "0", "x-more": "1" },
+    body: encCipher.subarray(0, splitAt),
+  });
+  const encRetryBody = (await encRetry.json()) as { existing?: boolean };
+  check(
+    "encrypted re-upload → 200 existing",
+    encRetry.status === 200 && encRetryBody.existing === true,
+    `status=${encRetry.status}`,
+  );
+
+  const encAnnounceRef = ulid();
+  a.send({ t: "file.announce", clientId: encAnnounceRef, fileId: encFileId });
+  await a.waitFor((f) => f.t === "ack" && f.ref === encAnnounceRef, 3000, "enc file ack");
+  const encFileNew = await b.waitFor(
+    (f) => f.t === "file.new" && f.file.id === encFileId,
+    3000,
+    "enc file.new",
+  );
+  check(
+    "B receives file.new with enc=gcm1",
+    encFileNew.t === "file.new" && encFileNew.file.enc === "gcm1" && encFileNew.file.size === plainBytes.length,
+  );
+
+  const encDownload = await api(`/api/rooms/${roomId}/files/${encFileId}`, {
+    headers: { authorization: `Bearer ${tokenB}` },
+  });
+  const storedBytes = Buffer.from(await encDownload.arrayBuffer());
+  check(
+    "stored bytes are ciphertext (≠ plaintext)",
+    storedBytes.length === encCipher.length && storedBytes.equals(encCipher) && !storedBytes.equals(Buffer.from(plainBytes)),
+    `stored=${storedBytes.length}`,
+  );
+
+  const decrypted = new Uint8Array(plainBytes.length);
+  let outAt = 0;
+  for (let i = 0; i < frameCount(plainBytes.length); i++) {
+    const chunk = await decryptFileFrameWith(key, encFileId, i, new Uint8Array(storedBytes.subarray(frameOffset(i), i + 1 < frameCount(plainBytes.length) ? frameOffset(i + 1) : storedBytes.length)));
+    decrypted.set(chunk, outAt);
+    outAt += chunk.length;
+  }
+  check("download decrypts to original plaintext", Buffer.from(decrypted).equals(Buffer.from(plainBytes)));
+
+  const encRange = await api(`/api/rooms/${roomId}/files/${encFileId}`, {
+    headers: { authorization: `Bearer ${tokenA}`, range: `bytes=${frameOffset(1)}-${frameOffset(1) + 9}` },
+  });
+  check("encrypted range → 206 frame-aligned slice", encRange.status === 206, `status=${encRange.status}`);
+
+  // 16. invalid frame rejected without dropping the socket
   a.ws.send(JSON.stringify({ t: "nonsense" }));
   const badFrame = await a.waitFor((f) => f.t === "error" && f.code === "BAD_FRAME", 3000, "BAD_FRAME");
   check("invalid frame → BAD_FRAME, socket alive", badFrame.t === "error" && a.ws.readyState === WebSocket.OPEN);

@@ -251,3 +251,37 @@
     animation: none;
   }
 }
+
+/* --- Map dark navy theme --------------------------------------------------
+   Scoped to the /map page root (`map-dark` + data-map-theme="dark").
+   Custom-property overrides cascade to every token utility inside the map
+   (bg-canvas panels → #111a35, hairlines → #263253, ink → #eef2ff), while the
+   ground rules below paint the page background and beat the shell's
+   `bg-canvas` utility because they are unlayered. */
+
+@layer components {
+  .map-dark {
+    --color-canvas: #111a35;
+    --color-surface-soft: #1a2447;
+    --color-hairline: #263253;
+    --color-hairline-soft: #1d2748;
+    --color-ink: #eef2ff;
+    --color-primary: #eef2ff;
+    --color-on-primary: #0a1024;
+    --color-block-mint: #14432a;
+    color: #eef2ff;
+  }
+}
+
+.map-dark .bg-accent-magenta {
+  color: #ffffff;
+}
+
+.map-dark ::selection {
+  color: #0a1024;
+}
+
+body:has(.map-dark),
+body:has(.map-dark) > div {
+  background-color: #0a1024;
+}

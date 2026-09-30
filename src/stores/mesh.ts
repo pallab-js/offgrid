@@ -11,12 +11,14 @@ interface MeshState {
   peers: Peer[];
   channels: Channel[];
   typing: Record<string, string>; // channelId → deviceId (ephemeral)
+  reads: Record<string, Record<string, number>>; // channelId → deviceId → at
 
   setStatus: (status: LinkStatus) => void;
   setRtt: (rttMs: number | null) => void;
   setPresence: (peers: Peer[]) => void;
   setChannels: (channels: Channel[]) => void;
   setTyping: (channelId: string, deviceId: string | null) => void;
+  setRead: (channelId: string, deviceId: string, at: number) => void;
   applyEvent: (event: MeshEvent) => void;
   reset: () => void;
 }
@@ -27,6 +29,7 @@ const initial = {
   peers: [] as Peer[],
   channels: [] as Channel[],
   typing: {} as Record<string, string>,
+  reads: {} as Record<string, Record<string, number>>,
 };
 
 export const useMeshStore = create<MeshState>((set) => ({
@@ -43,6 +46,18 @@ export const useMeshStore = create<MeshState>((set) => ({
       if (deviceId) next[channelId] = deviceId;
       else delete next[channelId];
       return { typing: next };
+    }),
+
+  setRead: (channelId, deviceId, at) =>
+    set((state) => {
+      const channel = state.reads[channelId];
+      if (channel && (channel[deviceId] ?? 0) >= at) return state;
+      return {
+        reads: {
+          ...state.reads,
+          [channelId]: { ...channel, [deviceId]: at },
+        },
+      };
     }),
 
   /** Idempotent reducer for live + synced events (SDA §5.2). */

@@ -50,6 +50,9 @@ function routeEvent(event: MeshEvent): void {
     case "beacon.new":
       void useBeaconStore.getState().applyBeacon(event.beacon);
       break;
+    case "channel.read":
+      useMeshStore.getState().setRead(event.channelId, event.deviceId, event.at);
+      break;
     default:
       useMeshStore.getState().applyEvent(event);
   }

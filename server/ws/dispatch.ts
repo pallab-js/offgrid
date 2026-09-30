@@ -151,6 +151,30 @@ function dispatch(conn: Conn, frame: ClientFrame): void {
       return;
     }
 
+    case "msg.react": {
+      const room = requireRoom(conn);
+      const result = repo.setReaction(room, frame.id, frame.emoji, conn.device!.id, frame.on);
+      if (!result) throw new repo.RepoError("BAD_FRAME", "message not found");
+      ack(conn, frame.clientId, result.msg.id, result.rev);
+      if (result.changed) emit(room, { t: "msg.new", msg: result.msg, rev: result.rev });
+      return;
+    }
+
+    case "msg.read": {
+      const room = requireRoom(conn);
+      const result = repo.setRead(room, frame.channelId, conn.device!.id, frame.at);
+      if (result.changed) {
+        emit(room, {
+          t: "channel.read",
+          channelId: frame.channelId,
+          deviceId: conn.device!.id,
+          at: frame.at,
+          rev: result.rev,
+        });
+      }
+      return;
+    }
+
     case "file.announce": {
       const room = requireRoom(conn);
       const row = repo.getFile(room, frame.fileId);

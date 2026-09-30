@@ -28,6 +28,19 @@ export const REQUEST_TIMEOUT_MS = 8_000;
 /** PBKDF2 iterations for room key derivation (SDA §6.2). */
 export const PBKDF2_ITERATIONS = 210_000;
 
+/** Plaintext bytes per AES-GCM frame when encrypting file bytes at rest. */
+export const FILE_CHUNK_BYTES = 65_536;
+
+/** Per-frame overhead: 12-byte IV + 16-byte GCM tag. */
+export const FILE_FRAME_OVERHEAD = 28;
+
+/** Stored (ciphertext) size for a plaintext payload encrypted in frames. */
+export function fileCipherSize(plainSize: number): number {
+  if (plainSize <= 0) return 0;
+  const frames = Math.ceil(plainSize / FILE_CHUNK_BYTES);
+  return plainSize + frames * FILE_FRAME_OVERHEAD;
+}
+
 export const ERROR_CODES = [
   "BAD_FRAME",
   "BAD_TOKEN",
@@ -56,6 +69,7 @@ export const EVENT_TYPES: ReadonlySet<string> = new Set<string>([
   "file.new",
   "file.deleted",
   "beacon.new",
+  "channel.read",
 ]);
 
 export function isMeshEvent(frame: { t: string }): frame is MeshEvent {

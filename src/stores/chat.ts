@@ -1,13 +1,14 @@
 "use client";
 
 import { create } from "zustand";
-import type { Message } from "@/lib/protocol";
+import type { Message, Reaction } from "@/lib/protocol";
 import { ulid } from "@/lib/utils/id";
 import { sealText } from "@/lib/crypto/keycache";
 import {
   decryptText,
   findByClientId,
   findByServerId,
+  getRecord,
   listByChannel,
   listPending,
   patchRecord,
@@ -30,6 +31,7 @@ export interface ChatMessage {
   text: string | null;
   replyTo: string | null;
   attachments: string[];
+  reactions: Reaction[];
   createdAt: number;
   deletedAt: number | null;
   rev: number;
@@ -48,6 +50,7 @@ interface ChatState {
   sendAttachment: (channelId: string, fileId: string) => Promise<void>;
   deleteMessage: (message: ChatMessage) => Promise<void>;
   retryMessage: (uid: string) => Promise<void>;
+  toggleReaction: (message: ChatMessage, emoji: string) => Promise<void>;
   applyIncoming: (msg: Message) => Promise<void>;
   markAcked: (clientId: string, patch: { serverId: string; rev: number }) => Promise<void>;
   flushOutbox: () => Promise<void>;
@@ -93,11 +96,36 @@ async function toView(record: MessageRecord): Promise<ChatMessage> {
     text: await decryptText(record),
     replyTo: record.replyTo,
     attachments: record.attachments,
+    reactions: record.reactions ?? [],
     createdAt: record.createdAt,
     deletedAt: record.deletedAt,
     rev: record.rev,
     status: record.status,
   };
+}
+
+const reactionQueue: Array<{ uid: string; id: string; emoji: string; on: boolean }> = [];
+const MAX_REACT_QUEUE = 200;
+
+async function flushReactions(): Promise<void> {
+  while (reactionQueue.length && meshSocket.isOpen) {
+    const entry = reactionQueue[0]!;
+    reactionQueue.shift();
+    try {
+      await meshSocket.request({
+        t: "msg.react",
+        clientId: ulid(),
+        id: entry.id,
+        emoji: entry.emoji,
+        on: entry.on,
+      });
+    } catch {
+      if (!meshSocket.isOpen) {
+        reactionQueue.unshift(entry);
+        return;
+      }
+    }
+  }
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -253,6 +281,28 @@ export const useChatStore = create<ChatState>((set, get) => {
         void get().flushOutbox();
       }),
 
+    toggleReaction: (message, emoji) =>
+      serialized(async () => {
+        const { deviceId, roomId } = useSessionStore.getState();
+        if (!deviceId || !roomId) return;
+        const record = await getRecord(message.uid);
+        if (!record) return;
+        const base = record.reactions ?? [];
+        const mine = base.some((r) => r.emoji === emoji && r.deviceId === deviceId);
+        const on = !mine;
+        const next = on
+          ? [...base, { emoji, deviceId, at: Date.now() }]
+          : base.filter((r) => !(r.emoji === emoji && r.deviceId === deviceId));
+        await patchRecord(record.uid, { reactions: next });
+        if (get().loaded[record.channelId]) {
+          replaceView(record.uid, record.channelId, { reactions: next });
+        }
+        if (!record.serverId) return;
+        if (reactionQueue.length >= MAX_REACT_QUEUE) reactionQueue.shift();
+        reactionQueue.push({ uid: record.uid, id: record.serverId, emoji, on });
+        void flushReactions();
+      }),
+
     applyIncoming: (msg) =>
       serialized(async () => {
         const roomId = useSessionStore.getState().roomId;
@@ -295,6 +345,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       flushing = true;
       try {
         if (!meshSocket.isOpen) return;
+        await flushReactions();
         const pending = await listPending();
         for (const record of pending) {
           if (!meshSocket.isOpen) return;

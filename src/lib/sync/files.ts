@@ -38,6 +38,7 @@ export function fileRecordFromMeta(meta: FileMeta, roomId: string): FileRecord {
     mime: meta.mime,
     size: meta.size,
     sha256: meta.sha256,
+    enc: meta.enc,
     createdAt: meta.createdAt,
     deletedAt: meta.deletedAt,
     rev: meta.rev,

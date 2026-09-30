@@ -18,12 +18,13 @@
     "idb": "^8.0.3",
     "lucide-react": "^1.48.0",
     "next": "16.3.7",
+    "qrcode-generator": "^2.0.4",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "tsx": "^4.23.15",
     "ws": "^8.22.0",
     "zod": "^4.6.5",
-    "zustand": "^5.0.15",
-    "tsx": "^4.23.15"
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

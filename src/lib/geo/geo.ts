@@ -182,6 +182,31 @@ export function fromGpx(xml: string): MapWaypoint[] {
   return out;
 }
 
+const GPX_PT_RE = /<(?:trkpt|rtept)\b([^>]*)>/gi;
+const PT_LAT_RE = /\blat="([^"]+)"/i;
+const PT_LON_RE = /\blon="([^"]+)"/i;
+
+/**
+ * Ordered lat/lng pairs from a GPX track (<trk><trkseg><trkpt>) and/or route
+ * (<rte><rtept>). Accepts self-closing points, either attribute order and
+ * multi-segment tracks — document order is preserved.
+ */
+export function fromGpxRoute(xml: string): GeoPoint[] {
+  const out: GeoPoint[] = [];
+  for (const match of xml.matchAll(GPX_PT_RE)) {
+    const attrs = match[1] ?? "";
+    const lat = attrs.match(PT_LAT_RE)?.[1];
+    const lng = attrs.match(PT_LON_RE)?.[1];
+    if (lat === undefined || lng === undefined) continue;
+    const latNum = Number(lat);
+    const lngNum = Number(lng);
+    if (Number.isFinite(latNum) && Number.isFinite(lngNum)) {
+      out.push({ lat: latNum, lng: lngNum });
+    }
+  }
+  return out;
+}
+
 export const WAYPOINT_EXPORT_FORMAT = "offgrid-map";
 export const WAYPOINT_EXPORT_VERSION = 1;
 

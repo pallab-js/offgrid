@@ -48,10 +48,10 @@ All responses `application/json; charset=utf-8`. Errors: `{ "error": { "code": s
 | `GET /api/rooms/:id/meta` | — | `{ name, salt, createdAt }` | needed to derive proof; no secret leaked |
 | `POST /api/rooms/:id/join` | `{ deviceId, name, color, proof }` | `{ token, serverTime }` | 403 `BAD_PROOF` on mismatch |
 | `POST /api/rooms/:id/channels` | `{ name }` | `{ channel }` | auth; slugified unique per room |
-| `POST /api/rooms/:id/files` | raw stream | `{ fileId, rev }` | auth; headers: `X-File-Name` (URI-encoded ciphertext), `X-File-Iv` (URI-encoded IV), `X-File-Mime`, `X-File-Id` (client ULID, idempotent) |
+| `POST /api/rooms/:id/files` | raw body | `{ fileId, rev, size, enc }` | auth; headers: `X-File-Name` (URI-encoded sealed name), `X-File-Iv`, `X-File-Mime`, `X-File-Id` (client ULID, idempotent). Client-encrypted uploads add `X-Enc: gcm1`, `X-Plain-Size` and multipart framing `X-Part`/`X-More`: stored bytes are AES-GCM ciphertext (64 KiB frames), `size` reports plaintext length, `sha256` covers stored bytes |
 | `GET /api/rooms/:id/files/:fileId` | — | bytes | auth; supports `Range: bytes=a-b` → 206 + `Content-Range`; `HEAD` returns metadata only |
 | `DELETE /api/rooms/:id/files/:fileId` | — | `{ rev }` | auth; soft delete + unlink |
-| `GET /api/rooms/:id/export` | — | — | **not implemented** (stretch cut); export is generated client-side in Settings from IndexedDB (`offgrid-export` v1) |
+| `GET /api/rooms/:id/export` | — | `offgrid-hub-export` v1 JSON | auth (Bearer, hub capability token); full dump `{ format, version, exportedAt, room, channels, devices, messages, reads, notes, files, waypoints, progress, sos, beacons }`; sealed fields decrypt client-side with the room key. (Settings still offers the client-side `offgrid-export` v1 from IndexedDB.) |
 
 Validation: zod on every JSON body; file headers sanitized (strip path separators, cap 255 chars). Unknown routes → Next 404.
 
@@ -80,6 +80,8 @@ Validation: zod on every JSON body; file headers sanitized (strip path separator
 | `ping` | `{ ts }` | reply `pong { ts, serverTs }` |
 | `msg.send` | `{ clientId, channelId, kind: "text"\|"file", body: {ct,iv}\|null, attachments?: string[], replyTo?: string }` | insert (dedupe by clientId) → `ack` → broadcast `msg.new` |
 | `msg.del` | `{ clientId, id }` | soft delete → `ack` → broadcast `msg.deleted` |
+| `msg.react` | `{ clientId, id, emoji, on }` | per-device add/remove on the message row → `ack` → `msg.new` with updated `reactions` (broadcast only when changed) |
+| `msg.read` | `{ channelId, at }` | upsert `channelId::deviceId` read cursor (monotonic, rev-streamed) → `channel.read` broadcast only when the cursor advances |
 | `typing` | `{ channelId, on }` | fan-out only (not persisted) |
 | `sync.pull` | `{ cursor }` | `sync.batch` of all events with `rev > cursor`, ≤ 500/batch, `done` flag |
 | `presence.update` | `{ battery?: number\|null, manualBattery?: number }` | update device row → broadcast `presence` |
@@ -96,7 +98,7 @@ Validation: zod on every JSON body; file headers sanitized (strip path separator
 
 ### 4.3 Server → client frames
 
-`joined { room, channels, device, cursor, serverTime }` · `ack { ref, id, rev }` · `error { ref?, code, message }` · `pong { ts, serverTs }` · `presence { peers: Peer[] }` · `sync.batch { events: Event[], cursor, done }` · `msg.new { msg, rev }` · `msg.deleted { id, rev }` · `note.upsert`/`note.deleted` · `check.update` · `wp.upsert`/`wp.deleted` · `sos.raised`/`sos.cleared` · `file.new`/`file.deleted` · `beacon.new` · `channel.new`.
+`joined { room, channels, device, cursor, serverTime }` · `ack { ref, id, rev }` · `error { ref?, code, message }` · `pong { ts, serverTs }` · `presence { peers: Peer[] }` · `sync.batch { events: Event[], cursor, done }` · `msg.new { msg, rev }` · `msg.deleted { id, rev }` · `note.upsert`/`note.deleted` · `check.update` · `wp.upsert`/`wp.deleted` · `sos.raised`/`sos.cleared` · `file.new`/`file.deleted` · `beacon.new` · `channel.new` · `channel.read { channelId, deviceId, at, rev }`.
 
 `Peer = { deviceId, name, color, battery|null, rttMs|null, lastSeen, online }`.
 
@@ -136,6 +138,7 @@ CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY, client_id TEXT, room_id TEXT NOT NULL, channel_id TEXT NOT NULL,
   device_id TEXT NOT NULL, author TEXT NOT NULL, kind TEXT NOT NULL,
   body TEXT, iv TEXT, reply_to TEXT, attachments TEXT NOT NULL DEFAULT '[]',
+  reactions TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL, deleted_at INTEGER, rev INTEGER NOT NULL,
   UNIQUE(room_id, client_id)
 );
@@ -145,9 +148,15 @@ CREATE INDEX IF NOT EXISTS idx_messages_rev ON messages(rev);
 CREATE TABLE IF NOT EXISTS files (
   id TEXT PRIMARY KEY, room_id TEXT NOT NULL, device_id TEXT NOT NULL,
   name_ct TEXT NOT NULL, name_iv TEXT NOT NULL, mime TEXT NOT NULL,
-  size INTEGER NOT NULL, sha256 TEXT, path TEXT NOT NULL,
+  size INTEGER NOT NULL, sha256 TEXT, enc TEXT NOT NULL DEFAULT 'none', path TEXT NOT NULL,
   created_at INTEGER NOT NULL, deleted_at INTEGER, rev INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS reads (
+  id TEXT PRIMARY KEY,          -- `${channelId}::${deviceId}`
+  room_id TEXT NOT NULL, channel_id TEXT NOT NULL, device_id TEXT NOT NULL,
+  at INTEGER NOT NULL, rev INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reads_rev ON reads(rev);
 CREATE TABLE IF NOT EXISTS notes (
   id TEXT PRIMARY KEY, room_id TEXT NOT NULL, title_ct TEXT NOT NULL, title_iv TEXT NOT NULL,
   body_ct TEXT NOT NULL, body_iv TEXT NOT NULL, updated_at INTEGER NOT NULL,
@@ -176,7 +185,7 @@ CREATE TABLE IF NOT EXISTS beacons (
 CREATE TABLE IF NOT EXISTS rev_seq (v INTEGER NOT NULL);  -- single row, incremented per change
 ```
 
-Migrations: idempotent `CREATE TABLE IF NOT EXISTS` in `schema.ts` with a `meta(schema_version)` table for future ALTERs. **DB file is gitignored**; schema lives in code.
+Migrations: idempotent `CREATE TABLE IF NOT EXISTS` in `schema.ts`, plus guarded `ALTER TABLE … ADD COLUMN` for `messages.reactions`, `files.enc` on pre-existing DBs (no `schema_version` needed yet). **DB file is gitignored**; schema lives in code.
 
 ## 6. Client data
 
@@ -184,13 +193,13 @@ Migrations: idempotent `CREATE TABLE IF NOT EXISTS` in `schema.ts` with a `meta(
 
 | Store | Key / index | Contents |
 |---|---|---|
-| `messages` | `uid`; idx `by-channel`, `by-client`, `by-server` | sealed body `{ct,iv}` + sync status (`pending`/`synced`/`failed`), reply/attachments, tombstones |
-| `files` | `id`; idx `by-room` | sealed name, mime/size/sha256, cached blob when `size < 32 MB`, tombstones |
+| `messages` | `uid`; idx `by-channel`, `by-client`, `by-server` | sealed body `{ct,iv}` + sync status (`pending`/`synced`/`failed`), reply/attachments/`reactions`, tombstones |
+| `files` | `id`; idx `by-room` | sealed name, mime/size/sha256, `enc` marker (`gcm1`/`none`), cached blob when `size < 32 MB`, tombstones |
 | `notes` | `id`; idx `by-room` | sealed title/body, LWW fields (`updatedAt`, `updatedBy`, `rev`, `deletedAt`) |
 | `waypoints` | `id`; idx `by-room` | sealed label, lat/lng **or** grid x/y, color, LWW fields |
 | `progress` | `roomId:itemId`; idx `by-room` | checklist item checked state, LWW fields |
 | `sos` | `id`; idx `by-room` | sealed note, lat/lng, `active`/`clearedAt`, rev |
-| `meta` | `key` | device-local only: `map` (image blob + 2-point calibration), `battery` (manual %) |
+| `meta` | `key` | device-local only: `map` (image blob + 2-point calibration + drawn GPX route), `battery` (manual %), `offgrid-map-theme` in localStorage |
 | `outbox` | `clientId` | raw client frames + `attempts` + `failed` flag (generic sync outbox for notes/checklist/map/SOS/beacon) |
 
 Channels are **not** persisted — they arrive in the `joined` frame. Sealed payloads decrypt in memory via the cached room key (`openText`).
@@ -209,7 +218,7 @@ UI writes to IDB first, then the outbox/socket; server ack confirms and stamps `
 |---|---|---|
 | N1 | LAN broadcast latency | p50 < 300 ms (2 browsers, same machine) |
 | N2 | Message durability | 10-min hub outage, 40 messages → all sync, no dupes |
-| N3 | File transfer | 500 MB upload with progress; interrupted download resumes via Range |
+| N3 | File transfer | 500 MB upload with progress; interrupted download resumes via Range (frame-aligned when encrypted; decrypt-on-the-fly pipeline) |
 | N4 | Frame validation | fuzzed/oversized frames → `error`, hub stays up (unit test) |
 | N5 | Rate limit | > 60 msg/s from one connection → `RATE_LIMITED`, others unaffected |
 | N6 | Startup | cold `pnpm dev` ready < 10 s; `pnpm build && pnpm start` < 3 s |

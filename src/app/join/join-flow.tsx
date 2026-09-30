@@ -4,10 +4,12 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { TopNav } from "@/components/layout/top-nav";
 import { Footer } from "@/components/layout/footer";
-import { Eyebrow } from "@/components/ui/eyebrow";
+import { Eyebrow, Caption } from "@/components/ui/eyebrow";
 import { Button } from "@/components/ui/button";
 import { Field, TextInput } from "@/components/ui/input";
 import { ColorBlock } from "@/components/ui/color-block";
+import { InvitePanel } from "@/components/invite/invite-panel";
+import { buildJoinUrl } from "@/lib/utils/invite";
 import { computeProof, deriveRoomKey, exportRoomKey } from "@/lib/crypto/room";
 import { randomB64 } from "@/lib/crypto/base64";
 import { ulid } from "@/lib/utils/id";
@@ -46,11 +48,22 @@ export function JoinFlow() {
   const [color, setColor] = useState<string>(IDENTITY_COLORS[1]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [created, setCreated] = useState<{
+    roomId: string;
+    roomName: string;
+    url: string;
+  } | null>(null);
 
   useEffect(() => {
     session.hydrate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!created) return;
+    const timer = setTimeout(() => router.push("/chat"), 10_000);
+    return () => clearTimeout(timer);
+  }, [created, router]);
 
   const alreadyIn = useMemo(
     () => session.hydrated && session.roomId && session.roomKeyB64,
@@ -97,7 +110,15 @@ export function JoinFlow() {
           const body = await res.json().catch(() => null);
           throw new Error(body?.error?.message ?? "Could not create the room.");
         }
-        await finishJoin({ roomId, roomName: effectiveRoomName, salt, deviceId, key, proof });
+        await finishJoin(
+          { roomId, roomName: effectiveRoomName, salt, deviceId, key, proof },
+          false,
+        );
+        setCreated({
+          roomId,
+          roomName: effectiveRoomName,
+          url: buildJoinUrl(window.location.origin, roomId),
+        });
         return;
       }
 
@@ -126,14 +147,17 @@ export function JoinFlow() {
     }
   }
 
-  async function finishJoin(input: {
-    roomId: string;
-    roomName: string;
-    salt: string;
-    deviceId: string;
-    key: CryptoKey;
-    proof: string;
-  }): Promise<void> {
+  async function finishJoin(
+    input: {
+      roomId: string;
+      roomName: string;
+      salt: string;
+      deviceId: string;
+      key: CryptoKey;
+      proof: string;
+    },
+    navigateToChat = true,
+  ): Promise<void> {
     const profile = { name: name.trim(), color };
     const res = await fetch(`/api/rooms/${encodeURIComponent(input.roomId)}/join`, {
       method: "POST",
@@ -166,7 +190,7 @@ export function JoinFlow() {
       roomKeyB64: await exportRoomKey(input.key),
       cursor: 0,
     });
-    router.push("/chat");
+    if (navigateToChat) router.push("/chat");
   }
 
   return (
@@ -177,7 +201,11 @@ export function JoinFlow() {
           <div className="flex flex-col items-start gap-5">
             <Eyebrow className="text-ink">Room access</Eyebrow>
             <h1 className="text-display-lg max-w-[14ch]">
-              {mode === "create" ? "Start a room." : "Join the mesh."}
+              {created
+                ? "Room is live."
+                : mode === "create"
+                  ? "Start a room."
+                  : "Join the mesh."}
             </h1>
             <p className="text-body-lg max-w-[44ch]">
               One passphrase protects the room&apos;s content on the hub — the
@@ -187,7 +215,28 @@ export function JoinFlow() {
           </div>
 
           <ColorBlock color={mode === "create" ? "lime" : "lilac"}>
-            {alreadyIn ? (
+            {created ? (
+              <div className="flex flex-col items-start gap-5">
+                <Eyebrow className="text-ink">Room created</Eyebrow>
+                <p className="text-subhead">
+                  <strong className="font-540">{created.roomName}</strong> is
+                  ready.
+                </p>
+                <p className="text-body-sm max-w-[44ch]">
+                  Share the link or let teammates scan it — the passphrase
+                  travels on a channel you trust, never in the code.
+                </p>
+                <InvitePanel url={created.url} />
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button size="lg" onClick={() => router.push("/chat")}>
+                    Open chat
+                  </Button>
+                  <Caption className="text-ink">
+                    opens by itself in 10s
+                  </Caption>
+                </div>
+              </div>
+            ) : alreadyIn ? (
               <div className="flex flex-col items-start gap-5">
                 <Eyebrow className="text-ink">Already unlocked</Eyebrow>
                 <p className="text-subhead">

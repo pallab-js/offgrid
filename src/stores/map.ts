@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import type { Waypoint } from "@/lib/protocol";
+import type { GeoPoint } from "@/lib/geo/geo";
 import { ulid } from "@/lib/utils/id";
 import { sealText, openText } from "@/lib/crypto/keycache";
 import { enqueue } from "@/lib/sync/outbox";
@@ -27,6 +28,7 @@ interface MapState {
   loaded: boolean;
   image: Blob | null;
   calibration: Calibration | null;
+  route: GeoPoint[];
 
   hydrate: () => Promise<void>;
   saveWaypoint: (input: {
@@ -43,6 +45,7 @@ interface MapState {
   applyDelete: (id: string, rev: number) => Promise<void>;
   setImage: (image: Blob | null) => Promise<void>;
   setCalibration: (calibration: Calibration | null) => Promise<void>;
+  setRoute: (route: GeoPoint[] | null) => Promise<void>;
   reset: () => void;
 }
 
@@ -78,6 +81,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   loaded: false,
   image: null,
   calibration: null,
+  route: [],
 
   hydrate: () =>
     serialized(async () => {
@@ -95,6 +99,7 @@ export const useMapStore = create<MapState>((set, get) => ({
         waypoints: sortWaypoints(views),
         image: meta?.image ?? null,
         calibration: meta?.calibration ?? null,
+        route: meta?.route ?? [],
         loaded: true,
       });
     }),
@@ -224,6 +229,20 @@ export const useMapStore = create<MapState>((set, get) => ({
       set({ calibration });
     }),
 
+  setRoute: (route) =>
+    serialized(async () => {
+      const db = await getDb();
+      const meta = (await db.get("meta", "map")) ?? { key: "map" };
+      await db.put("meta", { ...meta, key: "map", route });
+      set({ route: route ?? [] });
+    }),
+
   reset: () =>
-    set({ waypoints: [], loaded: false, image: null, calibration: null }),
+    set({
+      waypoints: [],
+      loaded: false,
+      image: null,
+      calibration: null,
+      route: [],
+    }),
 }));

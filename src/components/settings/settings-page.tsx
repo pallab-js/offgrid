@@ -1,20 +1,30 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Download, LogOut, Trash2 } from "lucide-react";
 import { useSessionStore } from "@/stores/session";
 import { IDENTITY_COLORS, onColor } from "@/lib/utils/color";
+import { buildJoinUrl } from "@/lib/utils/invite";
 import { downloadExport, wipeLocalData } from "@/lib/data/export";
 import { toast } from "@/stores/toast";
 import { Eyebrow } from "@/components/ui/eyebrow";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/ui/pill";
 import { TextInput } from "@/components/ui/input";
+import { InvitePanel } from "@/components/invite/invite-panel";
 import { cn } from "@/lib/utils/cn";
 
 const WIPE_PHRASE = "WIPE";
+
+function subscribeOrigin(): () => void {
+  return () => {};
+}
+
+function readServerOrigin(): string {
+  return "";
+}
 
 export function SettingsPage() {
   const hasRoom = useSessionStore((s) => Boolean(s.roomId));
@@ -103,6 +113,10 @@ export function SettingsPage() {
           </div>
         )}
       </section>
+
+      {hasRoom && roomId ? (
+        <InviteSection roomName={roomName ?? ""} roomId={roomId} />
+      ) : null}
 
       <section className="flex flex-col gap-4 rounded-xl border border-hairline bg-canvas p-5">
         <h2 className="text-card-title">Export</h2>
@@ -208,6 +222,29 @@ function ProfileForm({
       <div>
         <Button onClick={saveProfile}>Save profile</Button>
       </div>
+    </section>
+  );
+}
+
+function InviteSection({ roomName, roomId }: { roomName: string; roomId: string }) {
+  const joinUrl = useSyncExternalStore(
+    subscribeOrigin,
+    () => buildJoinUrl(window.location.origin, roomId),
+    readServerOrigin,
+  );
+
+  return (
+    <section className="flex flex-col gap-4 rounded-xl border border-hairline bg-canvas p-5">
+      <h2 className="text-card-title">Invite</h2>
+      <div className="flex flex-wrap items-center gap-3">
+        <Pill tone="soft">{roomName}</Pill>
+        <span className="caption text-ink">id {roomId}</span>
+      </div>
+      <p className="text-body-sm">
+        Scan or copy the link — teammates open it, pick a name and enter the
+        passphrase themselves. The code carries no secrets.
+      </p>
+      {joinUrl ? <InvitePanel url={joinUrl} /> : null}
     </section>
   );
 }

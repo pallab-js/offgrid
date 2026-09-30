@@ -1,5 +1,6 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
-import type { Cipher, ClientFrame } from "@/lib/protocol";
+import type { Cipher, ClientFrame, FileEnc, Reaction } from "@/lib/protocol";
+import type { GeoPoint } from "@/lib/geo/geo";
 
 export type MessageStatus = "pending" | "synced" | "failed";
 
@@ -19,6 +20,7 @@ export interface MessageRecord {
   body: Cipher | null;
   replyTo: string | null;
   attachments: string[];
+  reactions?: Reaction[];
   createdAt: number;
   deletedAt: number | null;
   rev: number;
@@ -36,6 +38,7 @@ export interface FileRecord {
   mime: string;
   size: number;
   sha256: string | null;
+  enc?: FileEnc;
   createdAt: number;
   deletedAt: number | null;
   rev: number;
@@ -103,11 +106,12 @@ export interface Calibration {
   p2: CalibrationPoint;
 }
 
-/** Device-local extras: shared map image + calibration, manual battery. */
+/** Device-local extras: shared map image + calibration, drawn route, manual battery. */
 export interface MetaRecord {
   key: string; // "map" | "battery"
   image?: Blob | null;
   calibration?: Calibration | null;
+  route?: GeoPoint[] | null;
   manualBattery?: number | null;
 }
 

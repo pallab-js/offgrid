@@ -39,11 +39,17 @@ export const messageSchema = z.object({
   body: cipherSchema.nullable(),
   replyTo: idSchema.nullable(),
   attachments: z.array(idSchema).max(16),
+  reactions: z
+    .array(z.object({ emoji: z.string().min(1).max(16), deviceId: idSchema, at: epochMs }))
+    .max(64)
+    .default([]),
   createdAt: epochMs,
   deletedAt: epochMs.nullable(),
   rev: z.number().int().positive(),
 });
 export type Message = z.infer<typeof messageSchema>;
+
+export type Reaction = { emoji: string; deviceId: string; at: number };
 
 export const peerSchema = z.object({
   deviceId: idSchema,
@@ -112,11 +118,13 @@ export const fileMetaSchema = z.object({
   mime: z.string().max(120),
   size: z.number().int().nonnegative(),
   sha256: z.string().max(128).nullable(),
+  enc: z.enum(["none", "gcm1"]).default("none"),
   createdAt: epochMs,
   deletedAt: epochMs.nullable(),
   rev: z.number().int().positive(),
 });
 export type FileMeta = z.infer<typeof fileMetaSchema>;
+export type FileEnc = FileMeta["enc"];
 
 /* ------------------------------------------------- server → client events */
 
@@ -145,6 +153,13 @@ export const eventSchema = z.discriminatedUnion("t", [
   z.object({ t: z.literal("file.new"), file: fileMetaSchema, rev: z.number().int().positive() }),
   z.object({ t: z.literal("file.deleted"), id: idSchema, rev: z.number().int().positive() }),
   z.object({ t: z.literal("beacon.new"), beacon: beaconSchema, rev: z.number().int().positive() }),
+  z.object({
+    t: z.literal("channel.read"),
+    channelId: idSchema,
+    deviceId: idSchema,
+    at: epochMs,
+    rev: z.number().int().positive(),
+  }),
 ]);
 export type MeshEvent = z.infer<typeof eventSchema>;
 
@@ -200,6 +215,8 @@ export const c2sSchema = z.discriminatedUnion("t", [
     replyTo: idSchema.optional().nullable(),
   }),
   z.object({ t: z.literal("msg.del"), clientId: idSchema, id: idSchema }),
+  z.object({ t: z.literal("msg.react"), clientId: idSchema, id: idSchema, emoji: z.string().min(1).max(16), on: z.boolean() }),
+  z.object({ t: z.literal("msg.read"), channelId: idSchema, at: epochMs }),
   z.object({ t: z.literal("typing"), channelId: idSchema, on: z.boolean() }),
   z.object({ t: z.literal("sync.pull"), cursor: z.number().int().nonnegative() }),
 
@@ -244,6 +261,7 @@ export type ClientFrame = z.infer<typeof c2sSchema>;
 export const ACK_FRAMES = new Set<ClientFrame["t"]>([
   "msg.send",
   "msg.del",
+  "msg.react",
   "channel.create",
   "note.save",
   "note.del",

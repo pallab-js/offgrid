@@ -157,7 +157,27 @@ export function migrate(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_beacons_rev ON beacons(rev);
 
     CREATE TABLE IF NOT EXISTS rev_seq (v INTEGER NOT NULL);
+
+    CREATE TABLE IF NOT EXISTS reads (
+      id TEXT PRIMARY KEY,
+      room_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      device_id TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      rev INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_reads_rev ON reads(rev);
   `);
+
+  const messageCols = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+  if (!messageCols.some((c) => c.name === "reactions")) {
+    db.exec("ALTER TABLE messages ADD COLUMN reactions TEXT NOT NULL DEFAULT '[]'");
+  }
+
+  const fileCols = db.prepare("PRAGMA table_info(files)").all() as { name: string }[];
+  if (!fileCols.some((c) => c.name === "enc")) {
+    db.exec("ALTER TABLE files ADD COLUMN enc TEXT NOT NULL DEFAULT 'none'");
+  }
 
   const row = db.prepare("SELECT v FROM rev_seq").get() as { v: number } | undefined;
   if (!row) db.prepare("INSERT INTO rev_seq (v) VALUES (0)").run();

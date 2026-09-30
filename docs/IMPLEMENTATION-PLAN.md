@@ -145,7 +145,17 @@
 
 ## 4. Stretch queue (only after DoD or explicit approval)
 
-QR join codes · encrypted file bytes at rest · read receipts · reactions · GPX route drawing · hub export endpoint · light/dark navy theme toggle for `/map`.
+Approved 2026-09-30 ("proceed") after DoD sign-off. **P7 status: all 7 done.**
+
+- [x] QR join codes — join-URL QR in the create-success panel and Settings → Invite (`qrcode-generator@2.0.4`, the one approved dep exception)
+- [x] Encrypted file bytes at rest — client-side AES-GCM, 64 KiB frames (IV‖ct‖tag, AAD `offgrid-file:<id>:<i>`), `files.enc=gcm1`, multipart upload (`X-Part`/`X-More`), resume-safe decrypting download
+- [x] Read receipts — per-device `reads` cursors (monotonic, rev-streamed `channel.read`), ✓/✓✓ ticks in chat
+- [x] Reactions — per-device `msg.react`, message-carried `reactions` (max 64), pill picker + optimistic queue
+- [x] GPX route drawing — `trkpt`/`rtept` import → lime polyline overlay on `/map` (device-local, needs calibration)
+- [x] Hub export endpoint — `GET /api/rooms/:id/export` → `offgrid-hub-export` v1 (Bearer-gated)
+- [x] Light/dark navy theme toggle for `/map` — `.map-dark` token overrides, persisted per device
+
+P7 gate: `pnpm lint && pnpm typecheck && pnpm test` green (79 tests); production smoke `HUB=… pnpm exec tsx scripts/smoke-p1.ts` 69/69.
 
 ## 5. Two-device LAN acceptance checklist (run at P1, P2, P3, P4, P6)
 

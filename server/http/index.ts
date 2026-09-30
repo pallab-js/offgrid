@@ -4,6 +4,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { config, filesDir } from "../config";
+import { fileCipherSize } from "../../src/lib/protocol/constants";
 import { currentRev } from "../db/index";
 import * as repo from "../db/repo";
 import { broadcast, connectionCount } from "../ws/registry";
@@ -79,6 +80,27 @@ export async function handleApi(
         salt: meta.salt,
         createdAt: meta.createdAt,
       });
+    }
+
+    const roomExport = /^\/api\/rooms\/([^/]+)\/export$/.exec(path);
+    if (method === "GET" && roomExport) {
+      const roomId = decodeURIComponent(roomExport[1]!);
+      requireToken(req, roomId);
+      const data = repo.exportRoom(roomId);
+      if (!data) throw new HttpError(404, "ROOM_NOT_FOUND", "unknown room");
+      const body = JSON.stringify(
+        { format: "offgrid-hub-export", version: 1, exportedAt: Date.now(), ...data },
+        null,
+        2,
+      );
+      res.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "content-disposition": `attachment; filename="offgrid-${roomId}-export.json"`,
+        "content-length": Buffer.byteLength(body),
+      });
+      res.end(body);
+      log("info", "room.export", { room: roomId });
+      return;
     }
 
     const fileCollection = /^\/api\/rooms\/([^/]+)\/files$/.exec(path);
@@ -212,6 +234,20 @@ async function handleUpload(
     throw new HttpError(400, "BAD_FRAME", "missing encrypted filename");
   }
 
+  const hasPart = headerString(req, "x-part") !== "";
+  const partRaw = Number(headerString(req, "x-part"));
+  const part = hasPart ? Math.max(0, Math.floor(partRaw)) : 0;
+  const more = headerString(req, "x-more") === "1";
+  const encHeader = headerString(req, "x-enc") || "none";
+  if (encHeader !== "none" && encHeader !== "gcm1") {
+    throw new HttpError(400, "BAD_FRAME", "unknown X-Enc");
+  }
+  const enc: "none" | "gcm1" = encHeader;
+  const plainSize = Number(headerString(req, "x-plain-size") || "0");
+  if (enc === "gcm1" && (!Number.isInteger(plainSize) || plainSize < 0)) {
+    throw new HttpError(400, "BAD_FRAME", "bad X-Plain-Size");
+  }
+
   const existing = repo.getFile(roomId, fileId);
   if (existing && existing.deleted_at === null) {
     req.resume(); // drain the (already uploaded) body; idempotent retry
@@ -220,6 +256,7 @@ async function handleUpload(
       rev: existing.rev,
       sha256: existing.sha256,
       size: existing.size,
+      enc: existing.enc,
       existing: true,
     });
   }
@@ -228,29 +265,39 @@ async function handleUpload(
   await fs.promises.mkdir(roomDir, { recursive: true });
   const finalPath = path.join(roomDir, fileId);
   const partPath = `${finalPath}.part`;
-  const hash = createHash("sha256");
-  let bytes = 0;
+
+  if (hasPart && part > 0) {
+    try {
+      await fs.promises.access(partPath);
+    } catch {
+      throw new HttpError(400, "BAD_FRAME", "stale upload part");
+    }
+  }
+
+  const truncate = !hasPart || part === 0;
+  const startedBytes = truncate
+    ? 0
+    : (await fs.promises.stat(partPath).then((st) => st.size).catch(() => 0));
 
   try {
     await new Promise<void>((resolve, reject) => {
-      const out = fs.createWriteStream(partPath, { flags: "w" });
+      const out = fs.createWriteStream(partPath, { flags: truncate ? "w" : "a" });
       let settled = false;
+      let requestBytes = 0;
       const fail = (error: unknown): void => {
         if (settled) return;
         settled = true;
         out.destroy();
         req.destroy();
-        void fs.promises.rm(partPath, { force: true });
         reject(error);
       };
 
       req.on("data", (chunk: Buffer) => {
-        bytes += chunk.length;
-        if (bytes > config.maxFileBytes) {
+        requestBytes += chunk.length;
+        if (startedBytes + requestBytes > config.maxFileBytes) {
           fail(new HttpError(413, "PAYLOAD_TOO_LARGE", "file exceeds size cap"));
           return;
         }
-        hash.update(chunk);
         if (!out.write(chunk)) {
           req.pause();
           out.once("drain", () => req.resume());
@@ -273,8 +320,22 @@ async function handleUpload(
     throw error;
   }
 
-  const sha256 = hash.digest("hex");
+  const stored = (await fs.promises.stat(partPath)).size;
+  if (more) {
+    return sendJson(res, 200, { fileId, part, stored });
+  }
+
+  if (enc === "gcm1") {
+    const expected = fileCipherSize(plainSize);
+    if (plainSize > config.maxFileBytes || stored !== expected) {
+      await fs.promises.rm(partPath, { force: true }).catch(() => undefined);
+      throw new HttpError(400, "BAD_FRAME", "ciphertext size mismatch");
+    }
+  }
+
+  const sha256 = await hashFile(partPath);
   await fs.promises.rename(partPath, finalPath);
+  const size = enc === "gcm1" ? plainSize : stored;
 
   const { file, rev, deduped } = repo.insertFile({
     id: fileId,
@@ -282,12 +343,26 @@ async function handleUpload(
     deviceId: authed.deviceId,
     name: { ct: nameCt, iv: nameIv },
     mime,
-    size: bytes,
+    size,
     sha256,
+    enc,
     path: finalPath,
   });
-  log("info", "file.upload", { room: roomId, device: authed.deviceId, file: fileId, size: bytes });
-  return sendJson(res, deduped ? 200 : 201, { fileId: file.id, rev, sha256, size: bytes });
+  log("info", "file.upload", { room: roomId, device: authed.deviceId, file: fileId, size, enc });
+  return sendJson(res, deduped ? 200 : 201, {
+    fileId: file.id,
+    rev,
+    sha256,
+    size: file.size,
+    enc: file.enc,
+  });
+}
+
+async function hashFile(filePath: string): Promise<string> {
+  const hash = createHash("sha256");
+  const stream = fs.createReadStream(filePath);
+  for await (const chunk of stream) hash.update(chunk as Buffer);
+  return hash.digest("hex");
 }
 
 async function handleDownload(

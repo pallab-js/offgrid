@@ -29,6 +29,11 @@ export async function removeRecord(uid: string): Promise<void> {
   await db.delete("messages", uid);
 }
 
+export async function getRecord(uid: string): Promise<MessageRecord | null> {
+  const db = await getDb();
+  return (await db.get("messages", uid)) ?? null;
+}
+
 export async function findByClientId(
   clientId: string,
 ): Promise<MessageRecord | null> {
@@ -71,6 +76,7 @@ export function recordFromServer(msg: Message, roomId: string): MessageRecord {
     body: msg.body,
     replyTo: msg.replyTo,
     attachments: msg.attachments,
+    reactions: msg.reactions ?? [],
     createdAt: msg.createdAt,
     deletedAt: msg.deletedAt,
     rev: msg.rev,

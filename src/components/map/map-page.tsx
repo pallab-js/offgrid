@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import Link from "next/link";
 import {
   Crosshair,
@@ -8,6 +14,8 @@ import {
   FileUp,
   LocateFixed,
   MapPin,
+  Moon,
+  Sun,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -23,6 +31,7 @@ import {
   formatCoord,
   formatDistance,
   fromGpx,
+  fromGpxRoute,
   fromWaypointJson,
   haversineMeters,
   latLngToPx,
@@ -34,6 +43,10 @@ import {
 const COLORS = ["#ff3d8b", "#3ddc84", "#57c7ff", "#ffd23f", "#c5b0f4"];
 
 const CAL_INDICES = [0, 1] as const;
+
+const MAP_THEME_KEY = "offgrid-map-theme";
+
+type MapTheme = "light" | "dark";
 
 interface Pixel {
   x: number;
@@ -79,6 +92,46 @@ function coordText(wp: WaypointView): string {
   return "no position";
 }
 
+let cachedMapTheme: MapTheme | null = null;
+let mapThemeListeners: (() => void)[] = [];
+
+function readServerMapTheme(): MapTheme {
+  return "light";
+}
+
+function readMapTheme(): MapTheme {
+  if (cachedMapTheme !== null) return cachedMapTheme;
+  try {
+    cachedMapTheme =
+      localStorage.getItem(MAP_THEME_KEY) === "dark" ? "dark" : "light";
+  } catch {
+    cachedMapTheme = "light";
+  }
+  return cachedMapTheme;
+}
+
+function subscribeMapTheme(onChange: () => void): () => void {
+  mapThemeListeners.push(onChange);
+  return () => {
+    mapThemeListeners = mapThemeListeners.filter((fn) => fn !== onChange);
+  };
+}
+
+function notifyMapTheme(): void {
+  for (const listener of mapThemeListeners) listener();
+}
+
+function writeMapTheme(theme: MapTheme): void {
+  cachedMapTheme = theme;
+  try {
+    localStorage.setItem(MAP_THEME_KEY, theme);
+  } catch {
+    notifyMapTheme();
+    return;
+  }
+  notifyMapTheme();
+}
+
 export function MapPage() {
   const hasRoom = useSessionStore((s) => Boolean(s.roomId));
   const waypoints = useMapStore((s) => s.waypoints);
@@ -89,6 +142,8 @@ export function MapPage() {
   const removeWaypoint = useMapStore((s) => s.removeWaypoint);
   const setImage = useMapStore((s) => s.setImage);
   const setCalibration = useMapStore((s) => s.setCalibration);
+  const route = useMapStore((s) => s.route);
+  const setRoute = useMapStore((s) => s.setRoute);
 
   const [natural, setNatural] = useState<NaturalImage | null>(null);
   const [pending, setPending] = useState<Pixel | null>(null);
@@ -99,7 +154,12 @@ export function MapPage() {
   const [pts, setPts] = useState<PtPair>(() => ({ p1: emptyPt(), p2: emptyPt() }));
   const [armed, setArmed] = useState<(typeof CAL_INDICES)[number] | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
-  const [imported, setImported] = useState<number | null>(null);
+  const [importMsg, setImportMsg] = useState<string | null>(null);
+  const mapTheme = useSyncExternalStore(
+    subscribeMapTheme,
+    readMapTheme,
+    readServerMapTheme,
+  );
 
   const imageInputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -148,6 +208,24 @@ export function MapPage() {
   const pendingCoord =
     pending && calibration ? pxToLatLng(calibration, pending.x, pending.y) : null;
   const labelValue = label.trim() || "Waypoint";
+  const routeMeters = route.reduce<number>((sum, point, index) => {
+    const prev = route[index - 1];
+    return prev ? sum + haversineMeters(prev, point) : sum;
+  }, 0);
+
+  let routePath = "";
+  if (calibration && naturalSize && route.length > 1) {
+    const coords: string[] = [];
+    for (const point of route) {
+      const px = latLngToPx(calibration, point);
+      if (px) {
+        coords.push(
+          `${(px.x / naturalSize.w) * 100},${(px.y / naturalSize.h) * 100}`,
+        );
+      }
+    }
+    routePath = coords.join(" ");
+  }
 
   const p1Lat = Number(pts.p1.lat);
   const p1Lng = Number(pts.p1.lng);
@@ -232,6 +310,14 @@ export function MapPage() {
     setArmed(null);
     void setImage(null);
     void setCalibration(null);
+  }
+
+  function toggleMapTheme(): void {
+    writeMapTheme(mapTheme === "dark" ? "light" : "dark");
+  }
+
+  function clearRoute(): void {
+    void setRoute(null);
   }
 
   function copyPendingPixel(index: (typeof CAL_INDICES)[number]): void {
@@ -343,7 +429,7 @@ export function MapPage() {
     e.target.value = "";
     if (!file) return;
     setImportError(null);
-    setImported(null);
+    setImportMsg(null);
     void importWaypoints(file);
   }
 
@@ -368,15 +454,29 @@ export function MapPage() {
         });
         count += 1;
       }
-      setImported(count);
-      setTimeout(() => setImported(null), 2000);
+      let routeCount = 0;
+      if (looksGpx) {
+        const routePoints = fromGpxRoute(text);
+        if (routePoints.length > 0) {
+          await setRoute(routePoints);
+          routeCount = routePoints.length;
+        }
+      }
+      const summary: string[] = [];
+      if (count > 0) summary.push(`Imported ${count} waypoints`);
+      if (routeCount > 0) summary.push(`Route ${routeCount} pts`);
+      setImportMsg(summary.join(" · ") || "Nothing to import");
+      setTimeout(() => setImportMsg(null), 2000);
     } catch {
       setImportError("Could not read that file");
     }
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div
+      className={cn("flex flex-col gap-6", mapTheme === "dark" && "map-dark")}
+      data-map-theme={mapTheme}
+    >
       <header>
         <Eyebrow className="text-ink">Map</Eyebrow>
         <h1 className="text-display-lg">Team map</h1>
@@ -404,6 +504,34 @@ export function MapPage() {
               </p>
             </div>
           )}
+
+          {routePath ? (
+            <svg
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 h-full w-full"
+              viewBox="0 0 100 100"
+              preserveAspectRatio="none"
+            >
+              <polyline
+                points={routePath}
+                fill="none"
+                strokeWidth={6}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
+                className="stroke-inverse-canvas/55"
+              />
+              <polyline
+                points={routePath}
+                fill="none"
+                strokeWidth={3}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
+                className="stroke-block-lime"
+              />
+            </svg>
+          ) : null}
 
           {sorted.map((wp) => {
             const pos = markerPosition(wp);
@@ -698,7 +826,22 @@ export function MapPage() {
           </section>
 
           <section className="flex flex-col gap-3 rounded-xl border border-hairline bg-canvas p-4">
-            <h2 className="caption text-ink">Import / Export</h2>
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="caption text-ink">Import / Export</h2>
+              <Button
+                variant="secondary"
+                size="sm"
+                aria-label="Map theme"
+                title="Map theme"
+                onClick={toggleMapTheme}
+              >
+                {mapTheme === "dark" ? (
+                  <Sun className="size-4" aria-hidden="true" />
+                ) : (
+                  <Moon className="size-4" aria-hidden="true" />
+                )}
+              </Button>
+            </div>
             <input
               ref={importInputRef}
               type="file"
@@ -728,9 +871,30 @@ export function MapPage() {
             {importError ? (
               <p className="text-body-sm">{importError}</p>
             ) : null}
-            {imported !== null ? (
-              <p className="caption text-ink">Imported {imported} waypoints</p>
+            {importMsg !== null ? (
+              <p className="caption text-ink">{importMsg}</p>
             ) : null}
+            {route.length > 0 ? (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="caption text-ink">
+                    route: {route.length} pts · {formatDistance(routeMeters)}
+                  </span>
+                  <Button variant="ghost" size="sm" onClick={clearRoute}>
+                    Clear route
+                  </Button>
+                </div>
+                {!calibration ? (
+                  <p className="text-body-sm">
+                    Calibrate the map to draw the route.
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <p className="text-body-sm">
+                Import GPX with a track to draw a route.
+              </p>
+            )}
           </section>
         </aside>
       </div>

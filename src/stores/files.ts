@@ -142,6 +142,7 @@ export const useFilesStore = create<FilesState>((set, get) => ({
       fileId: item.id,
       size: item.size,
       mime: item.mime,
+      enc: record?.enc ?? "none",
       onProgress: (loaded, total) =>
         set((state) => ({
           downloads: { ...state.downloads, [item.id]: { loaded, total } },
@@ -272,6 +273,7 @@ async function runUpload(file: File, existingId?: string): Promise<string> {
       mime: file.type || "application/octet-stream",
       size: result.size,
       sha256: result.sha256,
+      enc: result.enc ?? "gcm1",
       createdAt: Date.now(),
       deletedAt: null,
       rev: result.rev,

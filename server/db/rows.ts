@@ -41,8 +41,18 @@ export interface MessageRow {
   iv: string | null;
   reply_to: string | null;
   attachments: string;
+  reactions: string;
   created_at: number;
   deleted_at: number | null;
+  rev: number;
+}
+
+export interface ReadRow {
+  id: string;
+  room_id: string;
+  channel_id: string;
+  device_id: string;
+  at: number;
   rev: number;
 }
 
@@ -131,6 +141,7 @@ export interface FileRow {
   mime: string;
   size: number;
   sha256: string | null;
+  enc: string;
   path: string;
   created_at: number;
   deleted_at: number | null;
@@ -160,6 +171,7 @@ export const toMessage = (r: MessageRow): Message => ({
   body: cipher(r.body, r.iv),
   replyTo: r.reply_to,
   attachments: safeArray(r.attachments),
+  reactions: safeReactions(r.reactions),
   createdAt: r.created_at,
   deletedAt: r.deleted_at,
   rev: r.rev,
@@ -217,10 +229,30 @@ export const toFileMeta = (r: FileRow): FileMeta => ({
   mime: r.mime,
   size: r.size,
   sha256: r.sha256,
+  enc: r.enc === "gcm1" ? "gcm1" : "none",
   createdAt: r.created_at,
   deletedAt: r.deleted_at,
   rev: r.rev,
 });
+
+export const toRead = (r: ReadRow): { channelId: string; deviceId: string; at: number } => ({
+  channelId: r.channel_id,
+  deviceId: r.device_id,
+  at: r.at,
+});
+
+function safeReactions(json: string | undefined): Message["reactions"] {
+  try {
+    const parsed = JSON.parse(json ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (x): x is Message["reactions"][number] =>
+        x && typeof x.emoji === "string" && typeof x.deviceId === "string" && typeof x.at === "number",
+    );
+  } catch {
+    return [];
+  }
+}
 
 function safeArray(json: string): string[] {
   try {

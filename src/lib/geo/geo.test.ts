@@ -5,6 +5,7 @@ import {
   formatCoord,
   formatDistance,
   fromGpx,
+  fromGpxRoute,
   fromWaypointJson,
   haversineMeters,
   latLngToPx,
@@ -111,6 +112,57 @@ describe("GPX", () => {
   it("labels unnamed waypoints", () => {
     const parsed = fromGpx('<wpt lat="1" lon="2"></wpt>');
     expect(parsed[0]!.label).toBe("Waypoint 1");
+  });
+
+  it("does not treat track points as waypoints", () => {
+    const xml =
+      '<trk><trkseg><trkpt lat="12.9" lon="77.5"/><trkpt lat="12.8" lon="77.6"/></trkseg></trk>';
+    expect(fromGpx(xml)).toEqual([]);
+  });
+});
+
+describe("GPX route", () => {
+  it("parses track points across segments in document order", () => {
+    const xml = [
+      '<gpx><trk><name>Leg</name>',
+      '<trkseg><trkpt lat="12.9" lon="77.5"/><trkpt lat="12.91" lon="77.51"></trkpt></trkseg>',
+      '<trkseg><trkpt lat="12.92" lon="77.52"/></trkseg>',
+      "</trk></gpx>",
+    ].join("");
+    expect(fromGpxRoute(xml)).toEqual([
+      { lat: 12.9, lng: 77.5 },
+      { lat: 12.91, lng: 77.51 },
+      { lat: 12.92, lng: 77.52 },
+    ]);
+  });
+
+  it("parses lon-before-lat attributes", () => {
+    const xml = '<trk><trkseg><trkpt lon="77.6" lat="12.9"/></trkseg></trk>';
+    expect(fromGpxRoute(xml)).toEqual([{ lat: 12.9, lng: 77.6 }]);
+  });
+
+  it("parses route points from <rte><rtept>", () => {
+    const xml =
+      '<rte><rtept lat="1" lon="2"></rtept><rtept lat="3" lon="4"/></rte>';
+    expect(fromGpxRoute(xml)).toEqual([
+      { lat: 1, lng: 2 },
+      { lat: 3, lng: 4 },
+    ]);
+  });
+
+  it("returns an empty list for an empty track", () => {
+    expect(fromGpxRoute("<trk><trkseg></trkseg></trk>")).toEqual([]);
+  });
+
+  it("skips points with missing or malformed coordinates", () => {
+    const xml = [
+      '<trk><trkseg>',
+      '<trkpt lon="77.5"/>',
+      '<trkpt lat="oops" lon="77.6"/>',
+      '<trkpt lat="12.9" lon="77.7"/>',
+      "</trkseg></trk>",
+    ].join("");
+    expect(fromGpxRoute(xml)).toEqual([{ lat: 12.9, lng: 77.7 }]);
   });
 });
 

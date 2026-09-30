@@ -4,6 +4,8 @@ import { randomToken, ulid } from "../../src/lib/utils/id";
 import type {
   Beacon,
   Channel,
+  FileMeta,
+  Message,
   MeshEvent,
   Note,
   Peer,
@@ -16,6 +18,7 @@ import {
   toFileMeta,
   toMessage,
   toNote,
+  toRead,
   toSos,
   toWaypoint,
   type BeaconRow,
@@ -25,6 +28,7 @@ import {
   type MessageRow,
   type NoteRow,
   type ProgressRow,
+  type ReadRow,
   type RoomRow,
   type SosRow,
   type WaypointRow,
@@ -312,6 +316,7 @@ export function insertMessage(input: {
       iv: input.body?.iv ?? null,
       reply_to: input.replyTo ?? null,
       attachments: JSON.stringify(input.attachments),
+      reactions: "[]",
       created_at: now,
       deleted_at: null,
       rev,
@@ -359,6 +364,68 @@ export function softDeleteMessage(
     row.deleted_at = Date.now();
     row.rev = rev;
     return { msg: toMessage(row), rev, changed: true };
+  })();
+}
+
+type ReactionEntry = { emoji: string; deviceId: string; at: number };
+
+export function setReaction(
+  roomId: string,
+  id: string,
+  emoji: string,
+  deviceId: string,
+  on: boolean,
+): { msg: ReturnType<typeof toMessage>; rev: number; changed: boolean } | null {
+  const db = getDb();
+  return db.transaction(() => {
+    const row = db
+      .prepare("SELECT * FROM messages WHERE id = ? AND room_id = ?")
+      .get(id, roomId) as MessageRow | undefined;
+    if (!row) return null;
+    if (row.deleted_at !== null) return { msg: toMessage(row), rev: row.rev, changed: false };
+
+    let reactions: ReactionEntry[] = [];
+    try {
+      const parsed = JSON.parse(row.reactions ?? "[]");
+      if (Array.isArray(parsed)) reactions = parsed;
+    } catch {
+      reactions = [];
+    }
+    const exists = reactions.some((r) => r.emoji === emoji && r.deviceId === deviceId);
+    if (on === exists) return { msg: toMessage(row), rev: row.rev, changed: false };
+
+    const next = on
+      ? [...reactions, { emoji, deviceId, at: Date.now() }]
+      : reactions.filter((r) => !(r.emoji === emoji && r.deviceId === deviceId));
+    const rev = nextRev(db);
+    db.prepare("UPDATE messages SET reactions = ?, rev = ? WHERE id = ?").run(
+      JSON.stringify(next),
+      rev,
+      id,
+    );
+    row.reactions = JSON.stringify(next);
+    row.rev = rev;
+    return { msg: toMessage(row), rev, changed: true };
+  })();
+}
+
+export function setRead(
+  roomId: string,
+  channelId: string,
+  deviceId: string,
+  at: number,
+): { rev: number; changed: boolean } {
+  const db = getDb();
+  return db.transaction(() => {
+    const id = `${channelId}::${deviceId}`;
+    const existing = db.prepare("SELECT * FROM reads WHERE id = ?").get(id) as ReadRow | undefined;
+    if (existing && existing.at >= at) return { rev: existing.rev, changed: false };
+    const rev = nextRev(db);
+    db.prepare(
+      `INSERT INTO reads (id, room_id, channel_id, device_id, at, rev) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET at = excluded.at, rev = excluded.rev`,
+    ).run(id, roomId, channelId, deviceId, at, rev);
+    return { rev, changed: true };
   })();
 }
 
@@ -812,10 +879,12 @@ export function syncEvents(
        UNION ALL SELECT 'file', id, rev FROM files WHERE room_id = ? AND rev > ?
        UNION ALL SELECT 'beacon', id, rev FROM beacons WHERE room_id = ? AND rev > ?
        UNION ALL SELECT 'channel', id, rev FROM channels WHERE room_id = ? AND rev > ?
+       UNION ALL SELECT 'read', id, rev FROM reads WHERE room_id = ? AND rev > ?
        ORDER BY rev ASC
        LIMIT ?`,
     )
     .all(
+      roomId, cursor,
       roomId, cursor,
       roomId, cursor,
       roomId, cursor,
@@ -880,6 +949,13 @@ export function syncEvents(
   hydrate("channel", "channels", toChannel, (channel, rev) => ({
     t: "channel.new",
     channel,
+    rev,
+  }));
+  hydrate("read", "reads", toRead, (read, rev) => ({
+    t: "channel.read",
+    channelId: read.channelId,
+    deviceId: read.deviceId,
+    at: read.at,
     rev,
   }));
 
@@ -984,6 +1060,7 @@ export function insertSystemMessageIfQuiet(
       iv: null,
       reply_to: null,
       attachments: "[]",
+      reactions: "[]",
       created_at: now,
       deleted_at: null,
       rev,
@@ -1018,6 +1095,7 @@ export function insertFile(input: {
   mime: string;
   size: number;
   sha256: string;
+  enc: "none" | "gcm1";
   path: string;
 }): { file: ReturnType<typeof toFileMeta>; rev: number; deduped: boolean } {
   const db = getDb();
@@ -1031,22 +1109,22 @@ export function insertFile(input: {
     if (existing) {
       db.prepare(
         `UPDATE files SET device_id = ?, name_ct = ?, name_iv = ?, mime = ?,
-           size = ?, sha256 = ?, path = ?, created_at = ?, deleted_at = NULL, rev = ?
+           size = ?, sha256 = ?, enc = ?, path = ?, created_at = ?, deleted_at = NULL, rev = ?
          WHERE id = ? AND room_id = ?`,
       ).run(
         input.deviceId, input.name.ct, input.name.iv, input.mime,
-        input.size, input.sha256, input.path, now, rev,
+        input.size, input.sha256, input.enc, input.path, now, rev,
         input.id, input.roomId,
       );
       const row = getFile(input.roomId, input.id)!;
       return { file: toFileMeta(row), rev, deduped: false };
     }
     db.prepare(
-      `INSERT INTO files (id, room_id, device_id, name_ct, name_iv, mime, size, sha256, path, created_at, deleted_at, rev)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+      `INSERT INTO files (id, room_id, device_id, name_ct, name_iv, mime, size, sha256, enc, path, created_at, deleted_at, rev)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
     ).run(
       input.id, input.roomId, input.deviceId, input.name.ct, input.name.iv,
-      input.mime, input.size, input.sha256, input.path, now, rev,
+      input.mime, input.size, input.sha256, input.enc, input.path, now, rev,
     );
     const row = getFile(input.roomId, input.id)!;
     return { file: toFileMeta(row), rev, deduped: false };
@@ -1071,4 +1149,71 @@ export function softDeleteFile(
     const updated = getFile(roomId, fileId)!;
     return { file: toFileMeta(updated), rev, changed: true };
   })();
+}
+
+export interface RoomExport {
+  room: RoomMeta;
+  channels: Channel[];
+  devices: Array<{
+    id: string;
+    name: string;
+    color: string;
+    createdAt: number;
+    lastSeen: number | null;
+    battery: number | null;
+    rtt: number | null;
+  }>;
+  messages: Message[];
+  reads: Array<{ channelId: string; deviceId: string; at: number; rev: number }>;
+  notes: Note[];
+  files: FileMeta[];
+  waypoints: Waypoint[];
+  progress: Array<{ itemId: string; checked: boolean; updatedAt: number; updatedBy: string; rev: number }>;
+  sos: Sos[];
+  beacons: Beacon[];
+}
+
+export function exportRoom(roomId: string): RoomExport | null {
+  const db = getDb();
+  const room = getRoomMeta(roomId);
+  if (!room) return null;
+  const all = <T>(sql: string): T[] => db.prepare(sql).all(roomId) as T[];
+  return {
+    room,
+    channels: listChannels(roomId),
+    devices: listDevices(roomId).map((d) => ({
+      id: d.id,
+      name: d.name,
+      color: d.color,
+      createdAt: d.created_at,
+      lastSeen: d.last_seen,
+      battery: d.battery,
+      rtt: d.rtt,
+    })),
+    messages: all<MessageRow>(
+      "SELECT * FROM messages WHERE room_id = ? ORDER BY created_at ASC, id ASC",
+    ).map(toMessage),
+    reads: all<ReadRow>("SELECT * FROM reads WHERE room_id = ? ORDER BY id ASC").map((r) => ({
+      channelId: r.channel_id,
+      deviceId: r.device_id,
+      at: r.at,
+      rev: r.rev,
+    })),
+    notes: all<NoteRow>("SELECT * FROM notes WHERE room_id = ? ORDER BY id ASC").map(toNote),
+    files: all<FileRow>("SELECT * FROM files WHERE room_id = ? ORDER BY id ASC").map(toFileMeta),
+    waypoints: all<WaypointRow>(
+      "SELECT * FROM waypoints WHERE room_id = ? ORDER BY id ASC",
+    ).map(toWaypoint),
+    progress: all<ProgressRow>("SELECT * FROM progress WHERE room_id = ? ORDER BY item_id ASC").map(
+      (r) => ({
+        itemId: r.item_id,
+        checked: r.checked === 1,
+        updatedAt: r.updated_at,
+        updatedBy: r.updated_by,
+        rev: r.rev,
+      }),
+    ),
+    sos: all<SosRow>("SELECT * FROM sos_events WHERE room_id = ? ORDER BY id ASC").map(toSos),
+    beacons: all<BeaconRow>("SELECT * FROM beacons WHERE room_id = ? ORDER BY id ASC").map(toBeacon),
+  };
 }

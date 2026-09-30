@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
+  Check,
+  CheckCheck,
   CornerUpLeft,
   Download,
   FileText,
@@ -9,10 +11,12 @@ import {
   RotateCcw,
   Search,
   Send,
+  SmilePlus,
   Trash2,
   X,
 } from "lucide-react";
 import { useChatStore, type ChatMessage } from "@/stores/chat";
+import type { Reaction } from "@/lib/protocol";
 import { useFilesStore } from "@/stores/files";
 import { SosTimeline } from "@/components/sos/sos-timeline";
 import { formatBytes } from "@/lib/files/api";
@@ -26,6 +30,21 @@ import { TextInput } from "@/components/ui/input";
 import { Pill } from "@/components/ui/pill";
 
 const EMPTY: ChatMessage[] = [];
+
+const REACTION_CHOICES = ["👍", "❤️", "😂", "😮", "😢", "🙏"] as const;
+
+function groupReactions(reactions: Reaction[], myId: string | null) {
+  const counts = new Map<string, { count: number; mine: boolean }>();
+  for (const r of reactions) {
+    const entry = counts.get(r.emoji) ?? { count: 0, mine: false };
+    entry.count += 1;
+    if (r.deviceId === myId) entry.mine = true;
+    counts.set(r.emoji, entry);
+  }
+  return [...counts.entries()]
+    .map(([emoji, entry]) => ({ emoji, ...entry }))
+    .sort((a, b) => b.count - a.count || a.emoji.localeCompare(b.emoji));
+}
 
 type Row =
   | { kind: "day"; key: string; label: string }
@@ -92,11 +111,13 @@ export function Thread({ channelId }: { channelId: string }) {
   const messages = useChatStore((s) => s.messages[channelId] ?? EMPTY);
   const peers = useMeshStore((s) => s.peers);
   const typingId = useMeshStore((s) => s.typing[channelId]);
+  const channelReads = useMeshStore((s) => s.reads[channelId]);
   const myId = useSessionStore((s) => s.deviceId);
 
   const [query, setQuery] = useState("");
   const [reply, setReply] = useState<ChatMessage | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastReadSent = useRef(0);
 
   const byUid = useMemo(() => new Map(messages.map((m) => [m.uid, m])), [messages]);
   const rows = useMemo(() => buildRows(messages, query), [messages, query]);
@@ -104,6 +125,37 @@ export function Thread({ channelId }: { channelId: string }) {
     ? peers.find((p) => p.deviceId === typingId)?.name ?? "Someone"
     : null;
   const online = peers.filter((p) => p.online).length;
+
+  const sendRead = useCallback(() => {
+    if (document.visibilityState !== "visible") return;
+    if (!meshSocket.isOpen) return;
+    lastReadSent.current = Date.now();
+    meshSocket.send({ t: "msg.read", channelId, at: lastReadSent.current });
+  }, [channelId]);
+
+  useEffect(() => {
+    sendRead();
+  }, [sendRead]);
+
+  useEffect(() => {
+    if (messages.length > 0) sendRead();
+  }, [messages.length, sendRead]);
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") sendRead();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [sendRead]);
+
+  function isRead(msg: ChatMessage): boolean {
+    if (!channelReads || !myId) return false;
+    for (const [deviceId, at] of Object.entries(channelReads)) {
+      if (deviceId !== myId && at >= msg.createdAt) return true;
+    }
+    return false;
+  }
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -161,6 +213,8 @@ export function Thread({ channelId }: { channelId: string }) {
                     msg={row.msg}
                     showAuthor={row.showAuthor}
                     isOwn={row.msg.deviceId === myId}
+                    read={isRead(row.msg)}
+                    myId={myId}
                     color={peers.find((p) => p.deviceId === row.msg.deviceId)?.color}
                     replied={row.msg.replyTo ? byUid.get(row.msg.replyTo) ?? null : null}
                     onReply={() => setReply(row.msg)}
@@ -191,6 +245,8 @@ function MessageRow({
   msg,
   showAuthor,
   isOwn,
+  read,
+  myId,
   color,
   replied,
   onReply,
@@ -198,12 +254,16 @@ function MessageRow({
   msg: ChatMessage;
   showAuthor: boolean;
   isOwn: boolean;
+  read: boolean;
+  myId: string | null;
   color: string | undefined;
   replied: ChatMessage | null;
   onReply: () => void;
 }) {
   const deleteMessage = useChatStore((s) => s.deleteMessage);
   const retryMessage = useChatStore((s) => s.retryMessage);
+  const toggleReaction = useChatStore((s) => s.toggleReaction);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   if (msg.kind === "system") {
     return (
@@ -222,6 +282,7 @@ function MessageRow({
   }
 
   const avatarColor = color ?? "#c5b0f4";
+  const grouped = groupReactions(msg.reactions, myId);
 
   return (
     <div className={cn("group flex gap-3", isOwn && "flex-row-reverse")}>
@@ -267,8 +328,42 @@ function MessageRow({
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        {grouped.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5">
+            {grouped.map((g) => (
+              <button
+                key={g.emoji}
+                type="button"
+                onClick={() => void toggleReaction(msg, g.emoji)}
+                aria-label={`React with ${g.emoji}${g.mine ? " (yours)" : ""}`}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-pill border px-2.5 py-1 caption text-ink min-h-[44px] xs:min-h-[32px]",
+                  g.mine ? "border-ink bg-surface-soft" : "border-hairline hover:border-ink/40",
+                )}
+              >
+                <span aria-hidden="true">{g.emoji}</span>
+                <span>{g.count}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="relative flex flex-wrap items-center gap-2">
           <span className="caption text-ink">{clock(msg.createdAt)}</span>
+          {isOwn && msg.status === "synced" ? (
+            <span
+              role="img"
+              aria-label={read ? "Read" : "Sent"}
+              title={read ? "Read" : "Sent"}
+              className="text-ink"
+            >
+              {read ? (
+                <CheckCheck className="size-3.5" aria-hidden="true" />
+              ) : (
+                <Check className="size-3.5" aria-hidden="true" />
+              )}
+            </span>
+          ) : null}
           {isOwn && msg.status === "pending" ? (
             <span className="inline-flex items-center gap-1 caption text-ink">
               queued
@@ -288,6 +383,40 @@ function MessageRow({
             </span>
           ) : null}
           <span className="flex items-center gap-1">
+            {pickerOpen ? (
+              <>
+                <div
+                  className="fixed inset-0 z-10"
+                  onClick={() => setPickerOpen(false)}
+                  aria-hidden="true"
+                />
+                <div className="absolute right-0 bottom-full z-20 mb-1 flex gap-1 rounded-2xl border border-hairline bg-canvas p-1 shadow-lg">
+                  {REACTION_CHOICES.map((emoji) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => {
+                        void toggleReaction(msg, emoji);
+                        setPickerOpen(false);
+                      }}
+                      aria-label={`React with ${emoji}`}
+                      className="inline-flex size-11 items-center justify-center rounded-full text-body hover:bg-surface-soft xs:size-9"
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setPickerOpen((open) => !open)}
+              aria-label="Add reaction"
+              aria-expanded={pickerOpen}
+              className="inline-flex size-11 items-center justify-center rounded-full text-ink hover:bg-surface-soft xs:size-7"
+            >
+              <SmilePlus className="size-3.5" aria-hidden="true" />
+            </button>
             <button
               type="button"
               onClick={onReply}
