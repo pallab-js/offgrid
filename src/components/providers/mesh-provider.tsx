@@ -7,6 +7,12 @@ import { useSessionStore } from "@/stores/session";
 import { isMeshEvent, type MeshEvent, type ServerFrame } from "@/lib/protocol";
 import { useChatStore } from "@/stores/chat";
 import { useFilesStore } from "@/stores/files";
+import { useNotesStore } from "@/stores/notes";
+import { useChecklistStore } from "@/stores/checklist";
+import { useMapStore } from "@/stores/map";
+import { useSosStore } from "@/stores/sos";
+import { useBeaconStore } from "@/stores/beacon";
+import { flushOutbox as flushSharedOutbox } from "@/lib/sync/outbox";
 
 function routeEvent(event: MeshEvent): void {
   switch (event.t) {
@@ -18,6 +24,30 @@ function routeEvent(event: MeshEvent): void {
       break;
     case "file.deleted":
       void useFilesStore.getState().markDeleted(event.id, event.rev);
+      break;
+    case "note.upsert":
+      void useNotesStore.getState().applyIncoming(event.note, event.rev);
+      break;
+    case "note.deleted":
+      void useNotesStore.getState().applyDeleted(event.id, event.rev);
+      break;
+    case "check.update":
+      void useChecklistStore.getState().applyUpdate(event);
+      break;
+    case "wp.upsert":
+      void useMapStore.getState().applyUpsert(event.waypoint, event.rev);
+      break;
+    case "wp.deleted":
+      void useMapStore.getState().applyDelete(event.id, event.rev);
+      break;
+    case "sos.raised":
+      void useSosStore.getState().applyRaised(event.sos, event.rev);
+      break;
+    case "sos.cleared":
+      void useSosStore.getState().applyCleared(event.id, event.rev);
+      break;
+    case "beacon.new":
+      void useBeaconStore.getState().applyBeacon(event.beacon);
       break;
     default:
       useMeshStore.getState().applyEvent(event);
@@ -49,6 +79,7 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
         mesh.setChannels(frame.channels);
         meshSocket.send({ t: "sync.pull", cursor: useSessionStore.getState().cursor });
         void useChatStore.getState().flushOutbox();
+        void flushSharedOutbox();
         break;
       case "sync.batch":
         frame.events.forEach(routeEvent);
@@ -86,7 +117,10 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
     const offFrame = meshSocket.onFrame(applyFrame);
     const offStatus = meshSocket.onStatus((status) => {
       useMeshStore.getState().setStatus(status);
-      if (status === "online") void useChatStore.getState().flushOutbox();
+      if (status === "online") {
+        void useChatStore.getState().flushOutbox();
+        void flushSharedOutbox();
+      }
     });
     const offRtt = meshSocket.onRtt((rttMs) => {
       useMeshStore.getState().setRtt(rttMs);

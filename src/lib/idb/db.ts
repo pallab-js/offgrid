@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
-import type { Cipher } from "@/lib/protocol";
+import type { Cipher, ClientFrame } from "@/lib/protocol";
 
 export type MessageStatus = "pending" | "synced" | "failed";
 
@@ -42,28 +42,102 @@ export interface FileRecord {
   blob: Blob | null;
 }
 
+export interface NoteRecord {
+  id: string;
+  roomId: string;
+  title: Cipher;
+  body: Cipher;
+  updatedAt: number;
+  updatedBy: string;
+  deletedAt: number | null;
+  rev: number;
+}
+
+export interface WaypointRecord {
+  id: string;
+  roomId: string;
+  lat: number | null;
+  lng: number | null;
+  gx: number | null;
+  gy: number | null;
+  label: Cipher;
+  color: string;
+  updatedAt: number;
+  updatedBy: string;
+  deletedAt: number | null;
+  rev: number;
+}
+
+export interface ProgressRecord {
+  key: string; // `${roomId}:${itemId}`
+  roomId: string;
+  itemId: string;
+  checked: boolean;
+  updatedAt: number;
+  updatedBy: string;
+  rev: number;
+}
+
+export interface SosRecord {
+  id: string;
+  roomId: string;
+  deviceId: string;
+  note: Cipher | null;
+  lat: number | null;
+  lng: number | null;
+  active: boolean;
+  createdAt: number;
+  clearedAt: number | null;
+  rev: number;
+}
+
+export interface CalibrationPoint {
+  x: number;
+  y: number;
+  lat: number;
+  lng: number;
+}
+
+export interface Calibration {
+  p1: CalibrationPoint;
+  p2: CalibrationPoint;
+}
+
+/** Device-local extras: shared map image + calibration, manual battery. */
+export interface MetaRecord {
+  key: string; // "map" | "battery"
+  image?: Blob | null;
+  calibration?: Calibration | null;
+  manualBattery?: number | null;
+}
+
+export interface OutboxEntry {
+  clientId: string;
+  frame: ClientFrame & { clientId: string };
+  attempts: number;
+  createdAt: number;
+}
+
 interface OffgridSchema extends DBSchema {
   messages: {
     key: string;
     value: MessageRecord;
-    indexes: {
-      "by-channel": string;
-      "by-client": string;
-      "by-server": string;
-    };
+    indexes: { "by-channel": string; "by-client": string; "by-server": string };
   };
-  files: {
-    key: string;
-    value: FileRecord;
-    indexes: { "by-room": string };
-  };
+  files: { key: string; value: FileRecord; indexes: { "by-room": string } };
+  notes: { key: string; value: NoteRecord; indexes: { "by-room": string } };
+  waypoints: { key: string; value: WaypointRecord; indexes: { "by-room": string } };
+  progress: { key: string; value: ProgressRecord; indexes: { "by-room": string } };
+  sos: { key: string; value: SosRecord; indexes: { "by-room": string } };
+  meta: { key: string; value: MetaRecord };
+  outbox: { key: string; value: OutboxEntry };
 }
 
 let dbPromise: Promise<IDBPDatabase<OffgridSchema>> | null = null;
 
 export function getDb(): Promise<IDBPDatabase<OffgridSchema>> {
   if (!dbPromise) {
-    dbPromise = openDB<OffgridSchema>("offgrid", 2, {
+    dbPromise = openDB<OffgridSchema>("offgrid", 3, {
       upgrade(db, oldVersion) {
         if (oldVersion < 1) {
           const store = db.createObjectStore("messages", { keyPath: "uid" });
@@ -75,8 +149,23 @@ export function getDb(): Promise<IDBPDatabase<OffgridSchema>> {
           const files = db.createObjectStore("files", { keyPath: "id" });
           files.createIndex("by-room", "roomId");
         }
+        if (oldVersion < 3) {
+          const notes = db.createObjectStore("notes", { keyPath: "id" });
+          notes.createIndex("by-room", "roomId");
+          const wps = db.createObjectStore("waypoints", { keyPath: "id" });
+          wps.createIndex("by-room", "roomId");
+          const progress = db.createObjectStore("progress", { keyPath: "key" });
+          progress.createIndex("by-room", "roomId");
+          const sos = db.createObjectStore("sos", { keyPath: "id" });
+          sos.createIndex("by-room", "roomId");
+          db.createObjectStore("meta", { keyPath: "key" });
+          db.createObjectStore("outbox", { keyPath: "clientId" });
+        }
       },
     });
   }
   return dbPromise;
 }
+
+export type Db = IDBPDatabase<OffgridSchema>;
+export type StoreName = keyof OffgridSchema;

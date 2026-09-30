@@ -1,0 +1,116 @@
+{
+  "checklists": [
+    {
+      "id": "water-food",
+      "title": "Water & food (72 hours)",
+      "items": [
+        { "id": "water-food.1", "label": "Fill every bottle and jug — 4 L per person per day" },
+        { "id": "water-food.2", "label": "Pack water purification (tablets, filter, or boil kit)" },
+        { "id": "water-food.3", "label": "No-cook food: nuts, bars, tinned fish, dried fruit" },
+        { "id": "water-food.4", "label": "Manual can opener + disposable cutlery" },
+        { "id": "water-food.5", "label": "Infant, pet, and medical-diet supplies" },
+        { "id": "water-food.6", "label": "Electrolyte sachets and a thermal flask" },
+        { "id": "water-food.7", "label": "Cooler block frozen solid, charged power bank" }
+      ]
+    },
+    {
+      "id": "first-aid",
+      "title": "First aid restock",
+      "items": [
+        { "id": "first-aid.1", "label": "Adhesive bandages, gauze rolls, medical tape" },
+        { "id": "first-aid.2", "label": "Antiseptic wipes and antibiotic ointment" },
+        { "id": "first-aid.3", "label": "Blister kit: moleskin, needle, alcohol swab" },
+        { "id": "first-aid.4", "label": "Pain relief: paracetamol and ibuprofen" },
+        { "id": "first-aid.5", "label": "7-day supply of personal medication" },
+        { "id": "first-aid.6", "label": "Tweezers, trauma shears, nitrile gloves" },
+        { "id": "first-aid.7", "label": "Printed dose chart for children" },
+        { "id": "first-aid.8", "label": "Emergency blanket and triangular bandage" }
+      ]
+    },
+    {
+      "id": "evac",
+      "title": "Evacuation grab list",
+      "items": [
+        { "id": "evac.1", "label": "IDs, cash, and a copy of insurance papers in a dry bag" },
+        { "id": "evac.2", "label": "Phone, charger, and a spare battery — all charged" },
+        { "id": "evac.3", "label": "Room passphrase written on paper (OffGrid recovery)" },
+        { "id": "evac.4", "label": "Headlamp, spare batteries, whistle, lighter" },
+        { "id": "evac.5", "label": "Local map marked with two rally points" },
+        { "id": "evac.6", "label": "Change of clothes, rain layer, spare footwear" },
+        { "id": "evac.7", "label": "Pet carrier, leash, food, and vaccination record" },
+        { "id": "evac.8", "label": "Keys — house, vehicle, shed — on one carabiner" }
+      ]
+    },
+    {
+      "id": "comms",
+      "title": "Comms check",
+      "items": [
+        { "id": "comms.1", "label": "Hub machine powered and on the same network" },
+        { "id": "comms.2", "label": "Every device joined the room (presence shows them)" },
+        { "id": "comms.3", "label": "Handheld radios charged, channel and privacy code noted" },
+        { "id": "comms.4", "label": "Meet points and a no-comms fallback time confirmed" },
+        { "id": "comms.5", "label": "Beacon presets tested: SOS, HELP, MAYDAY" }
+      ]
+    }
+  ],
+  "guides": [
+    {
+      "id": "water-safe",
+      "title": "Making water safe",
+      "sections": [
+        {
+          "heading": "Order of operations",
+          "body": "Filter first to remove sediment and cysts, then disinfect. Turbid water defeats chemical treatment — run it through cloth or a filter before dosing."
+        },
+        {
+          "heading": "Boiling",
+          "body": "A rolling boil for one full minute kills bacteria, viruses and protozoa. At altitudes above 2000 m, extend to three minutes. Let it cool covered."
+        },
+        {
+          "heading": "Chemical treatment",
+          "body": "Chlorine dioxide tablets: typically 30–60 minutes wait, follow the pack. Iodine is effective but avoid in pregnancy or thyroid conditions. Half-life drops with heat — never dose warm water."
+        },
+        {
+          "heading": "Storage",
+          "body": "Re-contamination is the usual failure point. Keep treated water in a closed vessel, pour rather than dip, and date it after three days even when sealed."
+        }
+      ]
+    },
+    {
+      "id": "cold",
+      "title": "Cold and hypothermia",
+      "sections": [
+        {
+          "heading": "Recognise it early",
+          "body": "The drift is subtle: uncontrollable shivering, clumsy hands, slurred speech, poor judgement. The moment coordination slips, stop and rewarm — decisions get dangerous here."
+        },
+        {
+          "heading": "Rewarm correctly",
+          "body": "Remove wet layers, insulate from the ground, and add dry cover. Warm the torso core first — neck, armpits, groin. Avoid rubbing extremities; ice crystals in tissue do damage. Sweet warm drinks only if fully alert."
+        },
+        {
+          "heading": "Do not",
+          "body": "No alcohol, no hard exercise to 'generate heat' once shivering stalls, no direct dry-heat on frozen skin. Severe cases (shivering stops, confused) need evacuation — handle gently; rough movement can trigger cardiac arrhythmia."
+        }
+      ]
+    },
+    {
+      "id": "signal",
+      "title": "Signalling for rescue",
+      "sections": [
+        {
+          "heading": "Three of anything",
+          "body": "Three fires in a triangle, three whistle blasts, three flashes — the universal distress pattern. Keep the pile ready: dry tinder, wind break, one match sequence you have practised."
+        },
+        {
+          "heading": "Sound carries further than you think",
+          "body": "A whistle beats shouting by an order of magnitude and saves your breath. One long blast every minute, rest between. In the OffGrid beacon, use SOS at a slow 10–15 WPM so distant receivers can copy."
+        },
+        {
+          "heading": "Make yourself contrast",
+          "body": "Bright fabric on open ground, mirror flashes toward aircraft (aim at the reflection patch, sweep across the target). Stay put once you have signalled — moving makes you invisible to a search that is already looking."
+        }
+      ]
+    }
+  ]
+}

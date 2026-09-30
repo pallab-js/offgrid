@@ -285,7 +285,94 @@ async function main(): Promise<void> {
   });
   check("deleted file → 404", afterDelete.status === 404, `status=${afterDelete.status}`);
 
-  // 11. invalid frame rejected without dropping the socket
+  // 11. P4 survival suite: notes, checklist, waypoints, SOS, beacon
+  const cipher = { ct: "ZW5jb2RlZC1jaXBoZXJ0ZXh0", iv: "aXZpdg==" };
+
+  const noteRef = ulid();
+  a.send({ t: "note.save", clientId: noteRef, title: cipher, body: cipher, updatedAt: Date.now() });
+  const noteAck = await a.waitFor((f) => f.t === "ack" && f.ref === noteRef, 3000, "note ack");
+  check("note.save acked", noteAck.t === "ack");
+  const noteUpsert = await b.waitFor((f) => f.t === "note.upsert", 3000, "note.upsert");
+  check("B receives note.upsert", noteUpsert.t === "note.upsert");
+
+  const noteDelRef = ulid();
+  a.send({ t: "note.del", clientId: noteDelRef, id: noteAck.t === "ack" ? noteAck.id : "missing", updatedAt: Date.now() + 1 });
+  const noteDelAck = await a.waitFor((f) => f.t === "ack" && f.ref === noteDelRef, 3000, "note.del ack");
+  check("note.del acked", noteDelAck.t === "ack");
+  const noteGone = await b.waitFor((f) => f.t === "note.deleted", 3000, "note.deleted");
+  check("B receives note.deleted", noteGone.t === "note.deleted");
+
+  const checkRef = ulid();
+  a.send({ t: "check.set", clientId: checkRef, itemId: "water-food.1", checked: true, updatedAt: Date.now() });
+  const checkAck = await a.waitFor((f) => f.t === "ack" && f.ref === checkRef, 3000, "check ack");
+  check("check.set acked", checkAck.t === "ack");
+  const checkEvt = await b.waitFor((f) => f.t === "check.update" && f.itemId === "water-food.1", 3000, "check.update");
+  check(
+    "B receives check.update",
+    checkEvt.t === "check.update" && checkEvt.checked === true,
+  );
+
+  const wpRef = ulid();
+  a.send({
+    t: "wp.save",
+    clientId: wpRef,
+    lat: 12.9716,
+    lng: 77.5946,
+    gx: null,
+    gy: null,
+    label: cipher,
+    color: "#ff3d8b",
+    updatedAt: Date.now(),
+  });
+  const wpAck = await a.waitFor((f) => f.t === "ack" && f.ref === wpRef, 3000, "wp ack");
+  check("wp.save acked", wpAck.t === "ack");
+  const wpEvt = await b.waitFor((f) => f.t === "wp.upsert", 3000, "wp.upsert");
+  check("B receives wp.upsert", wpEvt.t === "wp.upsert");
+
+  const wpDelRef = ulid();
+  a.send({ t: "wp.del", clientId: wpDelRef, id: wpAck.t === "ack" ? wpAck.id : "missing", updatedAt: Date.now() + 1 });
+  const wpDelAck = await a.waitFor((f) => f.t === "ack" && f.ref === wpDelRef, 3000, "wp.del ack");
+  check("wp.del acked", wpDelAck.t === "ack");
+  const wpGone = await b.waitFor((f) => f.t === "wp.deleted", 3000, "wp.deleted");
+  check("B receives wp.deleted", wpGone.t === "wp.deleted");
+
+  const sosRef = ulid();
+  a.send({ t: "sos.raise", clientId: sosRef, lat: 12.9, lng: 77.5, note: cipher, updatedAt: Date.now() });
+  const sosAck = await a.waitFor((f) => f.t === "ack" && f.ref === sosRef, 3000, "sos ack");
+  check("sos.raise acked", sosAck.t === "ack");
+  const sosRaised = await b.waitFor((f) => f.t === "sos.raised", 3000, "sos.raised");
+  check(
+    "B receives sos.raised",
+    sosRaised.t === "sos.raised" && sosRaised.sos.active === true,
+  );
+
+  const sosDupRef = ulid();
+  a.send({ t: "sos.raise", clientId: sosDupRef, note: cipher, updatedAt: Date.now() + 1 });
+  const sosDupAck = await a.waitFor((f) => f.t === "ack" && f.ref === sosDupRef, 3000, "sos dup ack");
+  check(
+    "second raise reuses the same SOS event",
+    sosDupAck.t === "ack" && sosRaised.t === "sos.raised" && sosDupAck.id === sosRaised.sos.id,
+    `ids=${sosDupAck.t === "ack" ? sosDupAck.id : "?"} vs ${sosRaised.t === "sos.raised" ? sosRaised.sos.id : "?"}`,
+  );
+
+  const sosClearRef = ulid();
+  a.send({ t: "sos.clear", clientId: sosClearRef, id: sosAck.t === "ack" ? sosAck.id : "missing", updatedAt: Date.now() + 2 });
+  const sosClearAck = await a.waitFor((f) => f.t === "ack" && f.ref === sosClearRef, 3000, "sos clear ack");
+  check("sos.clear acked", sosClearAck.t === "ack");
+  const sosCleared = await b.waitFor((f) => f.t === "sos.cleared", 3000, "sos.cleared");
+  check("B receives sos.cleared", sosCleared.t === "sos.cleared");
+
+  const beaconRef = ulid();
+  a.send({ t: "beacon.share", clientId: beaconRef, text: cipher, wpm: 18 });
+  const beaconAck = await a.waitFor((f) => f.t === "ack" && f.ref === beaconRef, 3000, "beacon ack");
+  check("beacon.share acked", beaconAck.t === "ack");
+  const beaconEvt = await b.waitFor((f) => f.t === "beacon.new", 3000, "beacon.new");
+  check(
+    "B receives beacon.new",
+    beaconEvt.t === "beacon.new" && beaconEvt.beacon.wpm === 18,
+  );
+
+  // 12. invalid frame rejected without dropping the socket
   a.ws.send(JSON.stringify({ t: "nonsense" }));
   const badFrame = await a.waitFor((f) => f.t === "error" && f.code === "BAD_FRAME", 3000, "BAD_FRAME");
   check("invalid frame → BAD_FRAME, socket alive", badFrame.t === "error" && a.ws.readyState === WebSocket.OPEN);

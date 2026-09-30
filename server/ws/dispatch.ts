@@ -179,6 +179,128 @@ function dispatch(conn: Conn, frame: ClientFrame): void {
       return;
     }
 
+    case "note.save": {
+      const room = requireRoom(conn);
+      const { note, rev, changed } = repo.saveNote({
+        roomId: room,
+        id: frame.id,
+        title: frame.title,
+        body: frame.body,
+        updatedAt: frame.updatedAt,
+        updatedBy: conn.device!.id,
+      });
+      ack(conn, frame.clientId, note.id, rev);
+      if (changed) emit(room, { t: "note.upsert", note, rev });
+      return;
+    }
+
+    case "note.del": {
+      const room = requireRoom(conn);
+      const result = repo.deleteNote({
+        roomId: room,
+        id: frame.id,
+        updatedAt: frame.updatedAt,
+        updatedBy: conn.device!.id,
+      });
+      if (!result) throw new repo.RepoError("BAD_FRAME", "note not found");
+      ack(conn, frame.clientId, result.note.id, result.rev);
+      if (result.changed) emit(room, { t: "note.deleted", id: frame.id, rev: result.rev });
+      return;
+    }
+
+    case "check.set": {
+      const room = requireRoom(conn);
+      const { row, rev, changed } = repo.setProgress({
+        roomId: room,
+        itemId: frame.itemId,
+        checked: frame.checked,
+        updatedAt: frame.updatedAt,
+        updatedBy: conn.device!.id,
+      });
+      ack(conn, frame.clientId, row.item_id, rev);
+      if (changed) {
+        emit(room, {
+          t: "check.update",
+          itemId: row.item_id,
+          checked: row.checked === 1,
+          updatedAt: row.updated_at,
+          updatedBy: row.updated_by,
+          rev,
+        });
+      }
+      return;
+    }
+
+    case "wp.save": {
+      const room = requireRoom(conn);
+      const { waypoint, rev, changed } = repo.saveWaypoint({
+        roomId: room,
+        id: frame.id,
+        lat: frame.lat ?? null,
+        lng: frame.lng ?? null,
+        gx: frame.gx ?? null,
+        gy: frame.gy ?? null,
+        label: frame.label,
+        color: frame.color,
+        updatedAt: frame.updatedAt,
+        updatedBy: conn.device!.id,
+      });
+      ack(conn, frame.clientId, waypoint.id, rev);
+      if (changed) emit(room, { t: "wp.upsert", waypoint, rev });
+      return;
+    }
+
+    case "wp.del": {
+      const room = requireRoom(conn);
+      const result = repo.deleteWaypoint({
+        roomId: room,
+        id: frame.id,
+        updatedAt: frame.updatedAt,
+        updatedBy: conn.device!.id,
+      });
+      if (!result) throw new repo.RepoError("BAD_FRAME", "waypoint not found");
+      ack(conn, frame.clientId, result.waypoint.id, result.rev);
+      if (result.changed) emit(room, { t: "wp.deleted", id: frame.id, rev: result.rev });
+      return;
+    }
+
+    case "sos.raise": {
+      const room = requireRoom(conn);
+      const { sos, rev } = repo.raiseSos({
+        roomId: room,
+        deviceId: conn.device!.id,
+        note: frame.note ?? null,
+        lat: frame.lat ?? null,
+        lng: frame.lng ?? null,
+      });
+      ack(conn, frame.clientId, sos.id, rev);
+      emit(room, { t: "sos.raised", sos, rev });
+      log("warn", "sos.raise", { room, device: conn.device!.id });
+      return;
+    }
+
+    case "sos.clear": {
+      const room = requireRoom(conn);
+      const result = repo.clearSos({ roomId: room, id: frame.id, deviceId: conn.device!.id });
+      if (!result) throw new repo.RepoError("BAD_FRAME", "sos not found");
+      ack(conn, frame.clientId, result.sos.id, result.rev);
+      if (result.changed) emit(room, { t: "sos.cleared", id: frame.id, rev: result.rev });
+      return;
+    }
+
+    case "beacon.share": {
+      const room = requireRoom(conn);
+      const { beacon, rev } = repo.insertBeacon({
+        roomId: room,
+        deviceId: conn.device!.id,
+        text: frame.text,
+        wpm: frame.wpm,
+      });
+      ack(conn, frame.clientId, beacon.id, rev);
+      emit(room, { t: "beacon.new", beacon, rev });
+      return;
+    }
+
     case "channel.create": {
       const room = requireRoom(conn);
       const { channel, rev } = repo.insertChannel(room, frame.name);
@@ -199,13 +321,9 @@ function dispatch(conn: Conn, frame: ClientFrame): void {
     }
 
     default: {
-      // Frames owned by later phases — rejected explicitly, hub stays up.
-      sendError(
-        conn,
-        "NOT_IMPLEMENTED",
-        `frame "${frame.t}" arrives in a later phase`,
-        "clientId" in frame ? frame.clientId : undefined,
-      );
+      // zod guarantees exhaustiveness; runtime never lands here.
+      const unreachable: never = frame;
+      void unreachable;
     }
   }
 }

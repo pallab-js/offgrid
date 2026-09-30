@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useChatStore, type ChatMessage } from "@/stores/chat";
 import { useFilesStore } from "@/stores/files";
+import { SosTimeline } from "@/components/sos/sos-timeline";
 import { formatBytes } from "@/lib/files/api";
 import { useMeshStore } from "@/stores/mesh";
 import { useSessionStore } from "@/stores/session";
@@ -134,6 +135,8 @@ export function Thread({ channelId }: { channelId: string }) {
           />
         </div>
       </header>
+
+      {channel?.kind === "sos" ? <SosTimeline /> : null}
 
       <div
         ref={scrollRef}

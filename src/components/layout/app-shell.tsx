@@ -6,6 +6,7 @@ import { Siren } from "lucide-react";
 import { Logo } from "./logo";
 import { Pill } from "@/components/ui/pill";
 import { MeshProvider } from "@/components/providers/mesh-provider";
+import { SosOverlay } from "@/components/sos/sos-overlay";
 import { useMeshStore } from "@/stores/mesh";
 import { useSessionStore } from "@/stores/session";
 import { onColor } from "@/lib/utils/color";
@@ -84,6 +85,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <main className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-8 lg:px-8">
           {children}
         </main>
+        <SosOverlay />
       </div>
     </MeshProvider>
   );
