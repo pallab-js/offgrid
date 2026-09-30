@@ -132,7 +132,7 @@
 
 ## 2. Out-of-band (after remote repo provided)
 
-1. `git remote add origin <url> && git push -u origin main`
+1. [x] `git remote add origin <url> && git push -u origin main` — done 2026-09-30 (`https://github.com/pallab-js/offgrid.git`, tag `v0.1.0-alpha` + release published)
 2. Optional protected-branch / PR conventions — decided then, no CI config assumed.
 
 ## 3. Definition of Done (v1)
