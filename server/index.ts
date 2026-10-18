@@ -5,13 +5,16 @@ import {
 } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import fs from "node:fs";
+import type { Duplex } from "node:stream";
 import next from "next";
 import { WebSocketServer } from "ws";
 import { config } from "./config";
 import { closeDb, getDb } from "./db";
 import { handleApi } from "./http";
+import { clientIp, MAX_CONN_PER_IP, MAX_CONN_TOTAL } from "./ratelimit";
 import { log } from "./log";
 import { attachWs } from "./ws/attach";
+import { connectionCount, connectionsFromIp } from "./ws/registry";
 import { MAX_FRAME_BYTES, WS_PATH } from "../src/lib/protocol";
 
 const dev = process.env.NODE_ENV !== "production";
@@ -88,13 +91,40 @@ async function main(): Promise<void> {
     } catch {
       /* fall through to Next */
     }
-    if (pathname === WS_PATH) {
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        wss.emit("connection", ws, req);
-      });
-    } else {
+    if (pathname !== WS_PATH) {
       upgrade(req, socket, head);
+      return;
     }
+
+    // Cross-site WebSocket hijacking guard: browsers always attach Origin to
+    // ws:// requests and it must match the Host they are talking to. Clients
+    // without an Origin header (curl, scripts) are allowed — the token is the
+    // auth there, and the frame budgets below still apply.
+    const origin = req.headers.origin;
+    if (origin) {
+      let originHost = "";
+      try {
+        originHost = new URL(origin).host;
+      } catch {
+        /* malformed Origin → rejected below */
+      }
+      if (originHost !== req.headers.host) {
+        log("warn", "ws.upgrade.origin_mismatch", { origin });
+        return rejectUpgrade(socket, "403 Forbidden");
+      }
+    }
+
+    // Connection caps: the per-IP frame budget is only meaningful if one host
+    // can't open an unbounded number of sockets.
+    const ip = clientIp(req);
+    if (connectionCount() >= MAX_CONN_TOTAL || connectionsFromIp(ip) >= MAX_CONN_PER_IP) {
+      log("warn", "ws.upgrade.capped", { ip });
+      return rejectUpgrade(socket, "429 Too Many Requests");
+    }
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
+    });
   });
 
   const shutdown = (signal: string) => {
@@ -109,6 +139,16 @@ async function main(): Promise<void> {
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+}
+
+/** Refuse a WS upgrade with a bare HTTP status line, then drop the socket. */
+function rejectUpgrade(socket: Duplex, statusLine: string): void {
+  try {
+    socket.write(`HTTP/1.1 ${statusLine}\r\nconnection: close\r\n\r\n`);
+  } catch {
+    /* peer already gone */
+  }
+  socket.destroy();
 }
 
 main().catch((error) => {

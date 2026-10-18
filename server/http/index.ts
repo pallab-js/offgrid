@@ -8,6 +8,7 @@ import { fileCipherSize } from "../../src/lib/protocol/constants";
 import { currentRev } from "../db/index";
 import * as repo from "../db/repo";
 import { broadcast, connectionCount } from "../ws/registry";
+import { clientIp, httpLimiter, joinLimiter, roomCreateLimiter } from "../ratelimit";
 import { log } from "../log";
 
 const STARTED_AT = Date.now();
@@ -30,6 +31,7 @@ export async function handleApi(
   const url = new URL(rawUrl, "http://hub.local");
   const path = url.pathname;
   const method = req.method ?? "GET";
+  const ip = clientIp(req);
 
   try {
     if (method === "GET" && path === "/api/health") {
@@ -42,7 +44,15 @@ export async function handleApi(
       });
     }
 
+    // Everything below (except health) draws from one per-IP minute budget.
+    if (!httpLimiter.allow(ip)) {
+      throw new HttpError(429, "RATE_LIMITED", "too many requests from this address");
+    }
+
     if (method === "POST" && path === "/api/rooms") {
+      if (!roomCreateLimiter.allow(ip)) {
+        throw new HttpError(429, "RATE_LIMITED", "room creation rate exceeded, try again in a minute");
+      }
       const body = await readJson(req);
       const input = createRoomSchema.parse(body);
       const { meta, channels } = repo.createRoom({
@@ -58,6 +68,13 @@ export async function handleApi(
     const roomJoin = /^\/api\/rooms\/([^/]+)\/join$/.exec(path);
     if (method === "POST" && roomJoin) {
       const roomId = decodeURIComponent(roomJoin[1]!);
+      // The proof is the only thing standing between a caller and a token, so
+      // guesses get a strict per-IP+room budget — charged before the body is
+      // even read (SDA threat model: online passphrase guessing).
+      if (!joinLimiter.allow(`${ip}|${roomId}`)) {
+        log("warn", "room.join.throttled", { room: roomId, ip });
+        throw new HttpError(429, "RATE_LIMITED", "too many join attempts, try again in a minute");
+      }
       const body = await readJson(req);
       const input = joinSchema.parse(body);
       if (!repo.verifyProof(roomId, input.proof)) {

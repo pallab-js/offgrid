@@ -9,12 +9,16 @@ export interface ConnDevice {
 export interface Conn {
   id: string;
   ws: WebSocket;
+  /** Remote address — key for cross-connection (per-IP) rate budgets. */
+  ip: string;
   roomId: string | null;
   device: ConnDevice | null;
   lastFrameAt: number;
   /** sliding-window rate limiter */
   windowStart: number;
   windowCount: number;
+  /** last time this conn was told it was rate limited (error-response throttle) */
+  rateLimitedAt: number;
   rttMs: number | null;
   battery: number | null;
 }
@@ -66,6 +70,13 @@ export function roomConnectionCount(roomId: string): number {
 
 export function connectionCount(): number {
   return all.size;
+}
+
+/** Live connections from one client address (caps N-socket multiplication). */
+export function connectionsFromIp(ip: string): number {
+  let count = 0;
+  for (const conn of all) if (conn.ip === ip) count += 1;
+  return count;
 }
 
 export function allConns(): Conn[] {

@@ -10,10 +10,27 @@ import { currentRev } from "../db/index";
 import * as repo from "../db/repo";
 import { toFileMeta } from "../db/rows";
 import { log } from "../log";
+import { wsIpLimiter } from "../ratelimit";
 import { broadcast, enterRoom, exitRoom, onlinePeers, send, type Conn } from "./registry";
 
 export function handleMessage(conn: Conn, raw: string): void {
   conn.lastFrameAt = Date.now();
+
+  // Budgets are charged *before* any parsing so malformed floods can't bypass
+  // them, and pings are charged too (TRD N5). The per-IP budget means opening
+  // N sockets doesn't multiply the frame rate for one host.
+  const withinConnBudget = allow(conn);
+  const withinIpBudget = wsIpLimiter.allow(conn.ip);
+  if (!withinConnBudget || !withinIpBudget) {
+    // Answer at most one RATE_LIMITED per second per conn — replying to every
+    // rejected frame would let a flooder dictate our outbound traffic.
+    const now = Date.now();
+    if (now - conn.rateLimitedAt >= 1_000) {
+      conn.rateLimitedAt = now;
+      sendError(conn, "RATE_LIMITED", "too many frames");
+    }
+    return;
+  }
 
   let json: unknown;
   try {
@@ -26,19 +43,14 @@ export function handleMessage(conn: Conn, raw: string): void {
   if (!parsed.success) {
     return sendError(conn, "BAD_FRAME", "invalid frame");
   }
-  const frame = parsed.data;
-
-  if (frame.t !== "ping" && !allow(conn)) {
-    return sendError(conn, "RATE_LIMITED", "too many frames");
-  }
 
   try {
-    dispatch(conn, frame);
+    dispatch(conn, parsed.data);
   } catch (error) {
     if (error instanceof repo.RepoError) {
       return sendError(conn, error.code, error.message);
     }
-    log("error", "frame.unhandled", { code: frame.t, error: String(error) });
+    log("error", "frame.unhandled", { code: parsed.data.t, error: String(error) });
     sendError(conn, "INTERNAL", "server error");
   }
 }

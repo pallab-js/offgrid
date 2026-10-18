@@ -55,6 +55,14 @@ All responses `application/json; charset=utf-8`. Errors: `{ "error": { "code": s
 
 Validation: zod on every JSON body; file headers sanitized (strip path separators, cap 255 chars). Unknown routes → Next 404.
 
+Rate limits (sliding window per client IP, `429` + `RATE_LIMITED` when exceeded; constants in `server/ratelimit.ts`):
+
+| Budget | Limit |
+|---|---|
+| All API routes (health exempt) | 300 req/min per IP |
+| `POST /api/rooms` | 10/min per IP |
+| `POST /api/rooms/:id/join` (passphrase guesses) | 10/min per IP **and** room — charged before the body is read |
+
 ## 4. WebSocket protocol — `/ws`
 
 ### 4.1 Envelope
@@ -109,6 +117,12 @@ Error codes: `BAD_FRAME`, `BAD_TOKEN`, `BAD_PROOF`, `ROOM_NOT_FOUND`, `RATE_LIMI
 - Client sends `ping` every 15 s; RTT = pong latency (EMA over 5 samples).
 - Hub marks peer offline after 45 s without any frame; broadcasts `presence`.
 - On socket close: mark offline, broadcast.
+
+### 4.5 Rate limits & connection admission
+
+- Frame budgets are charged **before parsing** (malformed frames count) and include `ping` — 60 frames/s per connection, 480 frames/s per IP across all of that IP's connections (8 sockets' worth, so N sockets can't multiply one host's budget while a co-located peer keeps working).
+- `RATE_LIMITED` error responses are throttled to 1/s per connection so a flooder can't dictate our outbound traffic.
+- Upgrade admission: `Origin`, when present, must match `Host` (cross-site WebSocket hijacking); max 32 connections per IP, 256 total — refusals answer `403`/`429` on the raw upgrade. Clients without `Origin` (scripts) are allowed; the token + frame budgets still apply.
 
 ## 5. SQLite schema (DDL)
 
@@ -244,6 +258,7 @@ UI writes to IDB first, then the outbox/socket; server ack confirms and stamps `
 5. Zod validation on 100% of inbound frames/bodies; unknown keys stripped.
 6. No `dangerouslySetInnerHTML` for user content; search highlighting via text nodes.
 7. Room-scoped authorization: every query filters by `room_id` derived from the verified token, never from client payload.
+8. Abuse surfaces are budgeted: join guesses 10/min per IP+room, room creation 10/min per IP, WS frames 60/s per connection and 480/s per IP, ≤ 32 sockets per IP — and the WS upgrade rejects foreign `Origin` headers.
 
 ## 10. Acceptance criteria per requirement area
 

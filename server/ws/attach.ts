@@ -1,21 +1,25 @@
 import type { WebSocketServer } from "ws";
+import type { IncomingMessage } from "node:http";
 import { OFFLINE_MS, MAX_FRAME_BYTES } from "../../src/lib/protocol";
 import { ulid } from "../../src/lib/utils/id";
+import { clientIp } from "../ratelimit";
 import { log } from "../log";
 import { emitPresence, handleMessage } from "./dispatch";
 import { addConn, allConns, removeConn, type Conn } from "./registry";
 
 /** Wire a ws server to connection lifecycle + liveness sweeping. */
 export function attachWs(wss: WebSocketServer): void {
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req: IncomingMessage) => {
     const conn: Conn = {
       id: ulid(),
       ws,
+      ip: clientIp(req),
       roomId: null,
       device: null,
       lastFrameAt: Date.now(),
       windowStart: Date.now(),
       windowCount: 0,
+      rateLimitedAt: 0,
       rttMs: null,
       battery: null,
     };
