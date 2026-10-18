@@ -27,6 +27,51 @@ export function backoffDelay(attempts: number): number {
   return Math.min(BASE_RETRY_MS * 2 ** attempts, MAX_RETRY_MS);
 }
 
+/* ---------------------------------------------------------------- outcomes */
+
+interface Outcome {
+  promise: Promise<void>;
+  settled: boolean;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
+const outcomes = new Map<string, Outcome>();
+
+/**
+ * Watch one queued frame's delivery. Resolves when the hub acks it; rejects
+ * when it is permanently rejected or retries are exhausted (the entry is then
+ * retained as `failed` — visible in the offline banner and re-armable via
+ * `retryFailed`, never silently dropped).
+ *
+ * Register *before* `enqueue` so a fast flush can't settle first. Callers
+ * that don't await still can't trigger unhandled rejections (an internal
+ * catch is attached); watchers are one-shot — `retryFailed` re-arms the
+ * entry but not previously settled watchers.
+ */
+export function watchOutcome(clientId: string): Promise<void> {
+  const existing = outcomes.get(clientId);
+  if (existing) return existing.promise;
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  void promise.catch(() => undefined);
+  outcomes.set(clientId, { promise, settled: false, resolve, reject });
+  return promise;
+}
+
+function settle(clientId: string, ok: boolean, reason = ""): void {
+  const outcome = outcomes.get(clientId);
+  if (!outcome || outcome.settled) return;
+  outcome.settled = true;
+  outcomes.delete(clientId);
+  if (ok) outcome.resolve();
+  else outcome.reject(new Error(reason || "frame rejected by hub"));
+}
+
 export async function enqueue(frame: ClientFrame & { clientId: string }): Promise<void> {
   const db = await getDb();
   const entry: OutboxEntry = {
@@ -63,7 +108,9 @@ export async function retryFailed(): Promise<void> {
   const db = await getDb();
   const entries = await db.getAll("outbox");
   for (const entry of entries) {
-    if (entry.failed) await db.put("outbox", { ...entry, failed: false, attempts: 0 });
+    if (entry.failed) {
+      await db.put("outbox", { ...entry, failed: false, attempts: 0, nextAttemptAt: undefined });
+    }
   }
   await flushOutbox();
 }
@@ -79,22 +126,36 @@ export async function flushOutbox(): Promise<void> {
       .sort((a, b) => a.createdAt - b.createdAt);
     for (const entry of entries) {
       if (!meshSocket.isOpen) return;
+      // Backoff gate: an entry inside its retry window pauses the queue
+      // (ordering is by createdAt) without consuming attempts — enqueue
+      // bursts during an outage can no longer inflate `attempts` past
+      // MAX_ATTEMPTS and mark healthy frames failed. Re-arm the coalescing
+      // timer so a reload during backoff still retries.
+      if (entry.nextAttemptAt && entry.nextAttemptAt > Date.now()) {
+        scheduleFlush(entry.nextAttemptAt - Date.now());
+        return;
+      }
       try {
         await meshSocket.request(entry.frame);
         await db.delete("outbox", entry.clientId);
+        settle(entry.clientId, true);
       } catch (error) {
         const retryable = error instanceof FrameError && RETRYABLE.has(error.code);
         const attempts = entry.attempts + 1;
         if (retryable && attempts < MAX_ATTEMPTS) {
-          await db.put("outbox", { ...entry, attempts });
+          const nextAttemptAt = Date.now() + backoffDelay(attempts);
+          await db.put("outbox", { ...entry, attempts, nextAttemptAt });
           scheduleFlush(backoffDelay(attempts));
           return;
         }
-        if (error instanceof FrameError && !RETRYABLE.has(error.code)) {
-          await db.delete("outbox", entry.clientId);
-          continue;
-        }
+        // Permanent rejection or retries exhausted: KEEP the entry as `failed`
+        // (banner-visible, re-armable via retryFailed) — never silently
+        // delete a queued change, and tell any watcher the truth.
+        const code = error instanceof FrameError ? error.code : "INTERNAL";
         await db.put("outbox", { ...entry, attempts, failed: true });
+        console.warn(`outbox: frame ${entry.clientId} marked failed (${code})`);
+        settle(entry.clientId, false, code);
+        continue;
       }
     }
   } finally {

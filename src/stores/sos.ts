@@ -4,7 +4,8 @@ import { create } from "zustand";
 import type { Sos } from "@/lib/protocol";
 import { ulid } from "@/lib/utils/id";
 import { sealText, openText } from "@/lib/crypto/keycache";
-import { enqueue } from "@/lib/sync/outbox";
+import { enqueue, watchOutcome } from "@/lib/sync/outbox";
+import { toast } from "@/stores/toast";
 import { getDb, type SosRecord } from "@/lib/idb/db";
 import { useSessionStore } from "./session";
 
@@ -66,24 +67,36 @@ export const useSosStore = create<SosState>((set, get) => ({
       if (!deviceId) throw new Error("no session");
       const cipher = note ? await sealText(note) : null;
       set({ raising: true });
-      await enqueue({
-        t: "sos.raise",
+      const frame = {
+        t: "sos.raise" as const,
         clientId: ulid(),
         lat: lat ?? undefined,
         lng: lng ?? undefined,
         note: cipher ?? undefined,
         updatedAt: Date.now(),
+      };
+      // Watch before enqueue: if the hub permanently rejects the raise (or
+      // retries run out), the overlay must NOT keep claiming a signal is in
+      // flight — drop the flag and tell the operator to try again.
+      const outcome = watchOutcome(frame.clientId);
+      await enqueue(frame);
+      void outcome.catch(() => {
+        set({ raising: false });
+        toast("SOS did not reach the hub — raise it again", "error");
       });
     }),
 
   clear: (id) =>
     serialized(async () => {
-      await enqueue({ t: "sos.clear", clientId: ulid(), id, updatedAt: Date.now() });
+      const frame = { t: "sos.clear" as const, clientId: ulid(), id, updatedAt: Date.now() };
+      const outcome = watchOutcome(frame.clientId);
+      await enqueue(frame);
       set((state) => ({
         events: state.events.map((e) =>
           e.id === id ? { ...e, active: false, clearedAt: Date.now() } : e,
         ),
       }));
+      void outcome.catch(() => toast("Clear didn't sync — use Retry in the banner", "error"));
     }),
 
   applyRaised: (sos, rev) =>

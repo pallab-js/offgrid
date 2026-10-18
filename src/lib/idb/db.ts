@@ -26,6 +26,8 @@ export interface MessageRecord {
   rev: number;
   status: MessageStatus;
   attempts: number;
+  /** Earliest time the next send attempt may run (exponential backoff). */
+  retryAfter?: number;
   deletePending: boolean;
 }
 
@@ -121,6 +123,8 @@ export interface OutboxEntry {
   attempts: number;
   createdAt: number;
   failed?: boolean;
+  /** Earliest time the next send attempt may run (exponential backoff). */
+  nextAttemptAt?: number;
 }
 
 interface OffgridSchema extends DBSchema {

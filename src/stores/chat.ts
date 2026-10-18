@@ -334,6 +334,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           rev: Math.max(record.rev, patch.rev),
           status: "synced",
           attempts: 0,
+          retryAfter: undefined,
         });
         if (next && get().loaded[next.channelId]) {
           replaceView(next.uid, next.channelId, {
@@ -353,6 +354,14 @@ export const useChatStore = create<ChatState>((set, get) => {
         // Scoped to the connected room — pending rows from another room stay
         // queued until that room is re-entered.
         const pending = await listPending(useSessionStore.getState().roomId);
+        // Backoff gate: while the head record is inside its retry window the
+        // queue waits (ordering) without consuming attempts — a send burst
+        // during an outage can't mark healthy messages failed.
+        const head = pending[0];
+        if (head && head.retryAfter && head.retryAfter > Date.now()) {
+          scheduleFlush(head.retryAfter - Date.now());
+          return;
+        }
         for (const record of pending) {
           if (!meshSocket.isOpen) return;
           try {
@@ -386,7 +395,12 @@ export const useChatStore = create<ChatState>((set, get) => {
             const retryable = error instanceof FrameError && RETRYABLE.has(error.code);
             const attempts = record.attempts + 1;
             if (retryable && attempts < MAX_ATTEMPTS) {
-              await serialized(() => patchRecord(record.uid, { attempts }));
+              await serialized(() =>
+                patchRecord(record.uid, {
+                  attempts,
+                  retryAfter: Date.now() + backoffDelay(attempts),
+                }),
+              );
               scheduleFlush(backoffDelay(attempts));
               return;
             }

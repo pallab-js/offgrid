@@ -214,7 +214,7 @@ Migrations: idempotent `CREATE TABLE IF NOT EXISTS` in `schema.ts`, plus guarded
 | `progress` | `roomId:itemId`; idx `by-room` | checklist item checked state, LWW fields |
 | `sos` | `id`; idx `by-room` | sealed note, lat/lng, `active`/`clearedAt`, rev |
 | `meta` | `key` | device-local only: `map` (image blob + 2-point calibration + drawn GPX route), `battery` (manual %), `offgrid-map-theme` in localStorage |
-| `outbox` | `clientId` | raw client frames + `attempts` + `failed` flag (generic sync outbox for notes/checklist/map/SOS/beacon) |
+| `outbox` | `clientId` | raw client frames + `attempts` + `failed` flag + `nextAttemptAt` backoff gate (generic sync outbox for notes/checklist/map/SOS/beacon) |
 
 Channels are **not** persisted — they arrive in the `joined` frame. Sealed payloads decrypt in memory via the cached room key (`openText`).
 
@@ -225,6 +225,8 @@ Channels are **not** persisted — they arrive in the `joined` frame. Sealed pay
 ### 6.3 Write discipline
 
 UI writes to IDB first, then the outbox/socket; server ack confirms and stamps `rev`. Reducers applying server events are idempotent and LWW-safe: skip only when `existing.rev > incoming.rev` (equal rev applies — the authoritative overwrite wins); SOS clear always wins.
+
+**Cursor discipline:** the sync cursor asserts "everything before me is durably in IndexedDB" — `sync.batch` events are applied (awaited to the IDB commit) *before* the cursor advances and the next `sync.pull` goes out, so a crash mid-batch replays the batch instead of skipping it; the cursor itself never regresses. **Room transitions:** leaving a room, or joining a different one in the same tab, resets every domain store (`src/stores/reset.ts`) — the chat outbox flush is additionally scoped to the connected `roomId`, so pending messages from room A stay queued until A is re-entered.
 
 ## 7. Non-functional requirements
 
@@ -245,7 +247,7 @@ UI writes to IDB first, then the outbox/socket; server ack confirms and stamps `
 
 ## 8. Error handling & logging
 
-- **Client:** socket errors surface as a `StatusPill` state (`live / reconnecting / offline`); outbox entries retry with exponential backoff and are marked `failed` after 8 attempts (kept for manual retry, never silently dropped while retryable). Feature errors render inline (input-level), never global crash — route-level `error.tsx` boundaries everywhere.
+- **Client:** socket errors surface as a `StatusPill` state (`live / reconnecting / offline`); outbox entries retry with exponential backoff (`nextAttemptAt`/`retryAfter` gates the queue so enqueue bursts don't consume attempts) and are marked `failed` after 8 attempts **or on permanent rejection** — failed entries are kept (banner-visible, re-armable via manual retry), never silently dropped. SOS raise/clear watch their delivery outcome and drop the `raising` flag + toast on failure instead of claiming success. Feature errors render inline (input-level), never global crash — route-level `error.tsx` boundaries everywhere.
 - **Server:** try/catch per frame → `error` reply + log; uncaught exceptions logged and process kept alive (single-process hub: never `process.exit` on request errors). Log line format: `ISO level event room= device= detail` → `data/logs/hub.log` (size-rotated, 5 × 2 MB).
 - **Never log** passphrases, room keys, plaintext bodies, or tokens.
 
