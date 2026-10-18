@@ -11,7 +11,15 @@ import * as repo from "../db/repo";
 import { toFileMeta } from "../db/rows";
 import { log } from "../log";
 import { wsIpLimiter } from "../ratelimit";
-import { broadcast, enterRoom, exitRoom, onlinePeers, send, type Conn } from "./registry";
+import {
+  broadcast,
+  enterRoom,
+  exitRoom,
+  onlinePeers,
+  send,
+  type Conn,
+  type ConnDevice,
+} from "./registry";
 
 export function handleMessage(conn: Conn, raw: string): void {
   conn.lastFrameAt = Date.now();
@@ -74,33 +82,49 @@ function dispatch(conn: Conn, frame: ClientFrame): void {
         emitPresence(previous);
       }
 
-      repo.upsertDevice({
-        id: frame.device.id,
-        roomId: resolved.roomId,
+      // Identity is bound to the token row, not to the frame: every ownership
+      // check below (msg.del, file.del, authorship, presence) reads
+      // conn.device.id, so a held token must not be able to claim a different
+      // device. The frame may only set display fields (name/color).
+      if (frame.device.id !== resolved.deviceId) {
+        log("warn", "ws.join.device_mismatch", {
+          room: resolved.roomId,
+          frame_device: frame.device.id,
+          token_device: resolved.deviceId,
+        });
+      }
+      const device: ConnDevice = {
+        id: resolved.deviceId,
         name: frame.device.name,
         color: frame.device.color,
+      };
+      repo.upsertDevice({
+        id: device.id,
+        roomId: resolved.roomId,
+        name: device.name,
+        color: device.color,
       });
-      conn.device = frame.device;
+      conn.device = device;
       enterRoom(conn, resolved.roomId);
 
       send(conn, {
         t: "joined",
         room: { id: meta.id, name: meta.name },
         channels: repo.listChannels(meta.id),
-        device: frame.device,
+        device,
         cursor: currentRev(),
         serverTime: Date.now(),
       });
       emitPresence(resolved.roomId);
       const system = repo.insertSystemMessageIfQuiet(
         resolved.roomId,
-        frame.device.id,
-        frame.device.name,
+        device.id,
+        device.name,
       );
       if (system) {
         emit(resolved.roomId, { t: "msg.new", msg: system.msg, rev: system.rev });
       }
-      log("info", "ws.join", { room: meta.id, device: frame.device.id });
+      log("info", "ws.join", { room: meta.id, device: device.id });
       return;
     }
 
