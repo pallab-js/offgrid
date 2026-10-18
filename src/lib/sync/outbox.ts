@@ -4,18 +4,27 @@ import { getDb, type OutboxEntry } from "@/lib/idb/db";
 import type { ClientFrame } from "@/lib/protocol";
 import { meshSocket, FrameError } from "@/lib/ws/client";
 
-const MAX_ATTEMPTS = 8;
-const RETRYABLE = new Set(["INTERNAL", "RATE_LIMITED"]);
+/** Shared retry budget across every outbox (chat + generic shared frames). */
+export const MAX_ATTEMPTS = 8;
+export const RETRYABLE = new Set(["INTERNAL", "RATE_LIMITED"]);
+export const BASE_RETRY_MS = 1500;
+export const MAX_RETRY_MS = 30_000;
 
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let flushing = false;
 
-function scheduleFlush(delayMs: number): void {
+/** Shared scheduler — coalesces many rapid flush requests into one. */
+export function scheduleFlush(delayMs: number): void {
   if (flushTimer) return;
   flushTimer = setTimeout(() => {
     flushTimer = null;
     void flushOutbox();
   }, delayMs);
+}
+
+/** Exponential backoff with a hard cap, shared by every outbox. */
+export function backoffDelay(attempts: number): number {
+  return Math.min(BASE_RETRY_MS * 2 ** attempts, MAX_RETRY_MS);
 }
 
 export async function enqueue(frame: ClientFrame & { clientId: string }): Promise<void> {
@@ -78,7 +87,7 @@ export async function flushOutbox(): Promise<void> {
         const attempts = entry.attempts + 1;
         if (retryable && attempts < MAX_ATTEMPTS) {
           await db.put("outbox", { ...entry, attempts });
-          scheduleFlush(Math.min(1500 * 2 ** attempts, 30_000));
+          scheduleFlush(backoffDelay(attempts));
           return;
         }
         if (error instanceof FrameError && !RETRYABLE.has(error.code)) {
@@ -91,4 +100,16 @@ export async function flushOutbox(): Promise<void> {
   } finally {
     flushing = false;
   }
+}
+
+/**
+ * Single orchestrator for every outbox. Chat owns its own message outbox
+ * (with deletePending + status semantics); everything else routes through
+ * the generic outbox above. Call this from the socket provider on connect.
+ */
+export async function flushAllOutboxes(): Promise<void> {
+  // Import lazily to avoid a circular dependency with the chat store.
+  const { useChatStore } = await import("@/stores/chat");
+  await useChatStore.getState().flushOutbox();
+  await flushOutbox();
 }

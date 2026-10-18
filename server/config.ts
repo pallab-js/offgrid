@@ -13,6 +13,10 @@ export const config = {
   maxJsonBody: int(process.env.MAX_JSON_BODY, 32_768),
   logLevel: (process.env.LOG_LEVEL ?? "info") as "debug" | "info" | "warn" | "error",
   version: "0.1.0-alpha",
+  // TLS (optional, for LAN deployments where TLS may be desired)
+  enableTls: process.env.ENABLE_TLS === "true",
+  tlsCert: process.env.TLS_CERT,
+  tlsKey: process.env.TLS_KEY,
 };
 
 export const dbFile = () => path.join(config.dataDir, "mesh.db");

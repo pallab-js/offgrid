@@ -18,6 +18,7 @@ import {
 } from "@/lib/sync/messages";
 import type { MessageRecord } from "@/lib/idb/db";
 import { meshSocket, FrameError } from "@/lib/ws/client";
+import { MAX_ATTEMPTS, RETRYABLE, backoffDelay } from "@/lib/sync/outbox";
 import { useSessionStore } from "./session";
 
 export interface ChatMessage {
@@ -57,8 +58,7 @@ interface ChatState {
   reset: () => void;
 }
 
-const MAX_ATTEMPTS = 5;
-const RETRYABLE = new Set(["INTERNAL", "RATE_LIMITED"]);
+const MAX_REACT_QUEUE = 200;
 
 /* Serializes store mutations so IDB reads/writes keep a stable order. */
 let chain: Promise<unknown> = Promise.resolve();
@@ -68,6 +68,11 @@ function serialized<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/**
+ * Chat keeps its own flush guard + scheduler: retries must re-enter *this*
+ * store's flushOutbox (message status/deletePending semantics), not the
+ * generic outbox's. `backoffDelay` is shared with the generic outbox.
+ */
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let flushing = false;
 
@@ -105,7 +110,6 @@ async function toView(record: MessageRecord): Promise<ChatMessage> {
 }
 
 const reactionQueue: Array<{ uid: string; id: string; emoji: string; on: boolean }> = [];
-const MAX_REACT_QUEUE = 200;
 
 async function flushReactions(): Promise<void> {
   while (reactionQueue.length && meshSocket.isOpen) {
@@ -381,7 +385,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             const attempts = record.attempts + 1;
             if (retryable && attempts < MAX_ATTEMPTS) {
               await serialized(() => patchRecord(record.uid, { attempts }));
-              scheduleFlush(Math.min(1500 * 2 ** attempts, 30_000));
+              scheduleFlush(backoffDelay(attempts));
               return;
             }
             if (record.status === "pending") {

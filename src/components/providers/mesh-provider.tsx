@@ -13,7 +13,7 @@ import { useChecklistStore } from "@/stores/checklist";
 import { useMapStore } from "@/stores/map";
 import { useSosStore } from "@/stores/sos";
 import { useBeaconStore } from "@/stores/beacon";
-import { flushOutbox as flushSharedOutbox } from "@/lib/sync/outbox";
+import { flushAllOutboxes } from "@/lib/sync/outbox";
 
 function routeEvent(event: MeshEvent): void {
   switch (event.t) {
@@ -82,8 +82,7 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
       case "joined":
         mesh.setChannels(frame.channels);
         meshSocket.send({ t: "sync.pull", cursor: useSessionStore.getState().cursor });
-        void useChatStore.getState().flushOutbox();
-        void flushSharedOutbox();
+        void flushAllOutboxes();
         break;
       case "sync.batch":
         frame.events.forEach(routeEvent);
@@ -122,8 +121,7 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
     const offStatus = meshSocket.onStatus((status) => {
       useMeshStore.getState().setStatus(status);
       if (status === "online") {
-        void useChatStore.getState().flushOutbox();
-        void flushSharedOutbox();
+        void flushAllOutboxes();
       }
     });
     const offRtt = meshSocket.onRtt((rttMs) => {

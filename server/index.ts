@@ -1,4 +1,10 @@
-import { createServer, type Server } from "node:http";
+import {
+  createServer as createHttpServer,
+  type RequestListener,
+  type Server as HttpServer,
+} from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
+import fs from "node:fs";
 import next from "next";
 import { WebSocketServer } from "ws";
 import { config } from "./config";
@@ -26,7 +32,9 @@ async function main(): Promise<void> {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
   attachWs(wss);
 
-  const server: Server = createServer((req, res) => {
+  // One request listener shared by both transports: /api/* is ours,
+  // everything else (incl. dev HMR) goes back to Next.
+  const onRequest: RequestListener = (req, res) => {
     const url = req.url ?? "/";
     if (url === "/api/health" || url.startsWith("/api/")) {
       void handleApi(req, res, url).catch((error) => {
@@ -39,6 +47,37 @@ async function main(): Promise<void> {
       return;
     }
     handle(req, res);
+  };
+
+  let server: HttpServer | HttpsServer;
+  if (config.enableTls) {
+    if (!config.tlsCert || !config.tlsKey) {
+      throw new Error(
+        "ENABLE_TLS=true requires both TLS_CERT and TLS_KEY to be set (paths to a certificate and private key).",
+      );
+    }
+    let cert: Buffer;
+    let key: Buffer;
+    try {
+      cert = fs.readFileSync(config.tlsCert);
+      key = fs.readFileSync(config.tlsKey);
+    } catch (error) {
+      throw new Error(
+        `Failed to read TLS material (TLS_CERT=${config.tlsCert}, TLS_KEY=${config.tlsKey}): ${String(error)}`,
+      );
+    }
+    server = createHttpsServer({ cert, key }, onRequest);
+  } else {
+    server = createHttpServer(onRequest);
+  }
+
+  server.listen(config.port, config.hostname, () => {
+    log("info", "hub.listening", {
+      port: config.port,
+      host: config.hostname,
+      mode: dev ? "dev" : "prod",
+      tls: config.enableTls,
+    });
   });
 
   // Only /ws is ours — everything else (incl. dev HMR) goes back to Next.
@@ -56,14 +95,6 @@ async function main(): Promise<void> {
     } else {
       upgrade(req, socket, head);
     }
-  });
-
-  server.listen(config.port, config.hostname, () => {
-    log("info", "hub.listening", {
-      port: config.port,
-      host: config.hostname,
-      mode: dev ? "dev" : "prod",
-    });
   });
 
   const shutdown = (signal: string) => {

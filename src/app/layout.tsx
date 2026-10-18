@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import type { ReactNode } from "react";
 import "@fontsource-variable/inter";
 import "@fontsource/jetbrains-mono/400.css";
 import "./globals.css";
@@ -14,7 +15,7 @@ export const metadata: Metadata = {
   manifest: "/manifest.webmanifest",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className="h-full antialiased">
       <body className="min-h-full flex flex-col">
