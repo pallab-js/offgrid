@@ -36,12 +36,21 @@ pnpm dev            # hub + app on http://localhost:3000
 
 The passphrase never reaches the server: it derives an AES-GCM key in each browser (PBKDF2, 210k iterations) that encrypts message bodies, notes, waypoint labels and file names at rest in the hub's SQLite database.
 
+### Security model (read before field use)
+
+- **Room content is encrypted at rest, but the network is cleartext by default.** On a Wi-Fi network you don't control, a passive observer can see message ciphertext, file bytes, room salts, join proofs (which enable *offline* passphrase guessing) and bearer tokens — and an active attacker can tamper with the app code served over plain HTTP. This matches the v1 threat model of a trusted/controlled LAN; the full analysis is in [docs/SDA.md](docs/SDA.md).
+- **On a network you don't control, enable TLS:** `ENABLE_TLS=true TLS_CERT=/path/to/cert.pem TLS_KEY=/path/to/key.pem pnpm start`. The app, API and WebSocket all follow automatically (`https`/`wss`). Self-signed certificates show a warning on each joining device until you install your CA there.
+- Always-on protections regardless of transport: join guesses are rate-limited (10/min per IP+room), device identity is bound to its token server-side (a stolen token cannot impersonate another device), and every frame/body is schema-validated.
+- There is **no passphrase recovery** — see Troubleshooting; and use Settings → Danger zone to wipe a device that leaves service.
+
 Production build:
 
 ```bash
 pnpm build
 pnpm start
 ```
+
+Every environment variable (port, bind address, storage, TLS, logging) is documented in [.env.example](.env.example) — the hub reads them from the shell, it does not auto-load `.env`.
 
 ### Commands
 

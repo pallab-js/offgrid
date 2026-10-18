@@ -252,7 +252,7 @@ UI writes to IDB first, then the outbox/socket; server ack confirms and stamps `
 ## 9. Security requirements
 
 1. Room key never leaves memory/sessionStorage; never in URLs, logs, or IDB `meta`.
-2. Tokens compared by SHA-256 hash at rest; bearer only over LAN HTTP (documented: no TLS in v1 — LAN threat model).
+2. Tokens compared by SHA-256 hash at rest; bearer only over LAN HTTP by default — documented cleartext threat model (SDA), TLS opt-in via `ENABLE_TLS`/`TLS_CERT`/`TLS_KEY` (README "Security model").
 3. Path traversal impossible: file ids are ULIDs, storage paths built server-side only, download validated against DB row.
 4. Upload size enforced while streaming (abort at cap) and enforced again on disk stat.
 5. Zod validation on 100% of inbound frames/bodies; unknown keys stripped.
