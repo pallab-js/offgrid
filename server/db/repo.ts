@@ -134,6 +134,80 @@ export function verifyProof(roomId: string, proofB64: string): boolean {
   return timingSafeEqual(a, b);
 }
 
+/* --------------------------------------------------- room settings / moderation */
+
+interface RoomSettings {
+  moderators?: string[];
+}
+
+function readSettings(row: RoomRow): RoomSettings {
+  try {
+    const parsed: unknown = JSON.parse(row.settings || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as RoomSettings;
+    }
+  } catch {
+    /* corrupt settings blob — treat as empty */
+  }
+  return {};
+}
+
+function writeSettings(roomId: string, settings: RoomSettings): void {
+  getDb().prepare("UPDATE rooms SET settings = ? WHERE id = ?").run(JSON.stringify(settings), roomId);
+}
+
+/**
+ * Moderator device ids. `moderators === undefined` in settings means the
+ * list was never initialized (fresh room); an explicit `[]` means "nobody
+ * moderates" and must NOT re-trigger the first-joiner bootstrap.
+ */
+export function getModerators(roomId: string): string[] {
+  const row = getRoom(roomId);
+  if (!row) return [];
+  const mods = readSettings(row).moderators;
+  return Array.isArray(mods) ? mods : [];
+}
+
+/**
+ * First device to join an untouched room becomes its moderator (the PSK
+ * model has no separate admin credential — the room's creator device has no
+ * privileged claim at room creation, so the first joiner is the natural
+ * host). Re-reads settings inside the transaction so concurrent joiners
+ * can't both claim: once any explicit list exists, this is a no-op.
+ */
+export function claimModeratorIfUnset(roomId: string, deviceId: string): string[] | null {
+  const db = getDb();
+  return db.transaction(() => {
+    const row = getRoom(roomId);
+    if (!row) return null;
+    const settings = readSettings(row);
+    if (settings.moderators !== undefined) return null;
+    settings.moderators = [deviceId];
+    writeSettings(roomId, settings);
+    return [deviceId];
+  })();
+}
+
+export function isModerator(roomId: string, deviceId: string): boolean {
+  const row = getRoom(roomId);
+  if (!row) return false;
+  const mods = readSettings(row).moderators;
+  return Array.isArray(mods) && mods.includes(deviceId);
+}
+
+/** Replaces the moderator list (deduped, capped at 64). Null when room is gone. */
+export function setModerators(roomId: string, moderators: string[]): string[] | null {
+  const db = getDb();
+  return db.transaction(() => {
+    const row = getRoom(roomId);
+    if (!row) return null;
+    const settings = readSettings(row);
+    settings.moderators = [...new Set(moderators)].slice(0, 64);
+    writeSettings(roomId, settings);
+    return settings.moderators;
+  })();
+}
+
 /** sha256 of a bearer token — the stored form; also binds live connections. */
 export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -185,6 +259,17 @@ export function revokeToken(token: string, roomId: string): boolean {
     .prepare("DELETE FROM tokens WHERE hash = ? AND room_id = ?")
     .run(hashToken(token), roomId);
   return result.changes > 0;
+}
+
+/**
+ * Removes EVERY token a device holds in a room — a device accumulates one
+ * row per HTTP join, so revoking "this device" must cover all of them.
+ * Returns the number of rows removed.
+ */
+export function revokeDeviceTokens(roomId: string, deviceId: string): number {
+  return getDb()
+    .prepare("DELETE FROM tokens WHERE room_id = ? AND device_id = ?")
+    .run(roomId, deviceId).changes;
 }
 
 /* ------------------------------------------------------------ channels */
@@ -381,8 +466,9 @@ export function insertMessage(input: {
  * the next sync pull even though the sender saw an error).
  *
  * - system messages are server-generated join notices — clients can never
- *   delete them;
- * - otherwise only the message's authoring device may delete.
+ *   delete them (not even moderators; bulk-clearing is `clearSystemMessages`);
+ * - otherwise the authoring device may delete, and a moderator may delete
+ *   any member's message when `allowOthers` is set.
  *
  * Returns `null` when no such message exists; throws {@link RepoError}
  * (BAD_FRAME) when the actor is not allowed; idempotent `{ changed: false }`
@@ -392,6 +478,7 @@ export function softDeleteMessage(
   roomId: string,
   id: string,
   actorDeviceId: string,
+  allowOthers = false,
 ): { msg: ReturnType<typeof toMessage>; rev: number; changed: boolean } | null {
   const db = getDb();
   return db.transaction(() => {
@@ -402,7 +489,7 @@ export function softDeleteMessage(
     if (row.kind === "system") {
       throw new RepoError("BAD_FRAME", "system messages cannot be deleted");
     }
-    if (row.device_id !== actorDeviceId) {
+    if (row.device_id !== actorDeviceId && !allowOthers) {
       throw new RepoError("BAD_FRAME", "not your message");
     }
     if (row.deleted_at !== null) return { msg: toMessage(row), rev: row.rev, changed: false };
@@ -415,6 +502,35 @@ export function softDeleteMessage(
     row.deleted_at = Date.now();
     row.rev = rev;
     return { msg: toMessage(row), rev, changed: true };
+  })();
+}
+
+/**
+ * Moderation: bulk-clear the room's join notices in one transaction.
+ * Individual system messages remain undeletable through `msg.del` for every
+ * actor — this is the only path that removes them, and it returns tombstones
+ * for the caller to broadcast (clients drop them like normal deletions).
+ */
+export function clearSystemMessages(
+  roomId: string,
+): Array<{ msg: ReturnType<typeof toMessage>; rev: number }> {
+  const db = getDb();
+  return db.transaction(() => {
+    const rows = db
+      .prepare(
+        "SELECT * FROM messages WHERE room_id = ? AND kind = 'system' AND deleted_at IS NULL",
+      )
+      .all(roomId) as MessageRow[];
+    const now = Date.now();
+    const cleared: Array<{ msg: ReturnType<typeof toMessage>; rev: number }> = [];
+    for (const row of rows) {
+      const rev = nextRev(db);
+      db.prepare("UPDATE messages SET deleted_at = ?, rev = ? WHERE id = ?").run(now, rev, row.id);
+      row.deleted_at = now;
+      row.rev = rev;
+      cleared.push({ msg: toMessage(row), rev });
+    }
+    return cleared;
   })();
 }
 

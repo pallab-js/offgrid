@@ -17,6 +17,7 @@ import { IDENTITY_COLORS, onColor } from "@/lib/utils/color";
 import { useSessionStore } from "@/stores/session";
 import { resetRoomStores } from "@/stores/reset";
 import { revokeOwnToken } from "@/lib/session/token";
+import { postRoomJoin } from "@/lib/session/api";
 import { cn } from "@/lib/utils/cn";
 
 type Mode = "create" | "join";
@@ -161,24 +162,12 @@ export function JoinFlow() {
     navigateToChat = true,
   ): Promise<void> {
     const profile = { name: name.trim(), color };
-    const res = await fetch(`/api/rooms/${encodeURIComponent(input.roomId)}/join`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        deviceId: input.deviceId,
-        name: profile.name,
-        color: profile.color,
-        proof: input.proof,
-      }),
+    const { token, moderators } = await postRoomJoin(input.roomId, {
+      deviceId: input.deviceId,
+      name: profile.name,
+      color: profile.color,
+      proof: input.proof,
     });
-    if (res.status === 403) {
-      throw new Error("Wrong passphrase for this room.");
-    }
-    if (!res.ok) {
-      const body = await res.json().catch(() => null);
-      throw new Error(body?.error?.message ?? "Could not join the room.");
-    }
-    const { token } = (await res.json()) as { token: string };
 
     // Switching rooms in-place: drop the previous room's in-memory state first
     // (loaded guards would otherwise keep its data and block re-hydration).
@@ -196,6 +185,7 @@ export function JoinFlow() {
       roomName: input.roomName,
       token,
       roomKeyB64: await exportRoomKey(input.key),
+      moderators,
       cursor: 0,
     });
     if (navigateToChat) router.push("/chat");

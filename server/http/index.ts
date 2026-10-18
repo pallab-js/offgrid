@@ -81,9 +81,17 @@ export async function handleApi(
         throw new HttpError(403, "BAD_PROOF", "wrong passphrase for this room");
       }
       repo.upsertDevice({ id: input.deviceId, roomId, name: input.name, color: input.color });
+      // First device into an untouched room claims moderation (also attempted
+      // at WS join — whichever lands first wins; the claim is transactional).
+      const claimed = repo.claimModeratorIfUnset(roomId, input.deviceId);
+      if (claimed) broadcast(roomId, { t: "room.settings", moderators: claimed });
       const token = repo.issueToken(roomId, input.deviceId);
       log("info", "room.join", { room: roomId, device: input.deviceId });
-      return sendJson(res, 200, { token, serverTime: Date.now() });
+      return sendJson(res, 200, {
+        token,
+        serverTime: Date.now(),
+        moderators: repo.getModerators(roomId),
+      });
     }
 
     const roomMeta = /^\/api\/rooms\/([^/]+)\/meta$/.exec(path);
@@ -128,10 +136,48 @@ export async function handleApi(
         throw new HttpError(401, "BAD_TOKEN", "missing bearer token");
       }
       const token = header.slice(7);
-      // Idempotent and oracle-free: an unknown, already-expired or
-      // foreign-room token deletes nothing but gets the same 200 — the
-      // response never reveals whether a presented token was live.
+      const body = (await readJsonOptional(req)) as { deviceId?: unknown } | null;
+      const target = typeof body?.deviceId === "string" ? body.deviceId : null;
+
+      if (target) {
+        // Targeted revocation: a valid caller token is required; a moderator
+        // may revoke any device (lost/stolen member device), anyone may
+        // revoke their own — which covers every token row this device holds,
+        // not just the presented one.
+        const caller = requireToken(req, roomId);
+        if (target !== caller.deviceId && !repo.isModerator(roomId, caller.deviceId)) {
+          throw new HttpError(403, "NOT_MODERATOR", "only moderators can revoke other devices");
+        }
+        const tokens = repo.revokeDeviceTokens(roomId, target);
+        let closed = 0;
+        for (const conn of roomConns(roomId)) {
+          if (conn.device?.id !== target) continue;
+          send(conn, { t: "error", code: "BAD_TOKEN", message: "access revoked" });
+          try {
+            conn.ws.close(4001, "access revoked");
+            closed += 1;
+          } catch {
+            /* socket is already dying */
+          }
+        }
+        log("info", "room.revoke_device", {
+          room: roomId,
+          device: target,
+          tokens,
+          connections: closed,
+          by: caller.deviceId,
+        });
+        return sendJson(res, 200, { revoked: true, tokens, connections: closed });
+      }
+
+      // Self path without a body — idempotent and oracle-free: an unknown,
+      // already-expired or foreign-room token deletes nothing but gets the
+      // same 200 — the response never reveals whether a presented token was
+      // live. The presented row goes; if it was resolvable, every other
+      // token row this device accumulated (one per past join) goes too.
+      const resolved = repo.resolveToken(token, roomId);
       if (repo.revokeToken(token, roomId)) {
+        if (resolved) repo.revokeDeviceTokens(roomId, resolved.deviceId);
         // Kill live connections riding the revoked token — otherwise an
         // established WS keeps full room access until it happens to
         // reconnect (and re-auth with the now-dead token).
@@ -148,6 +194,52 @@ export async function handleApi(
         log("info", "room.revoke", { room: roomId });
       }
       return sendJson(res, 200, { revoked: true });
+    }
+
+    const roomMods = /^\/api\/rooms\/([^/]+)\/mods$/.exec(path);
+    if (method === "POST" && roomMods) {
+      const roomId = decodeURIComponent(roomMods[1]!);
+      const caller = requireToken(req, roomId);
+      if (!repo.isModerator(roomId, caller.deviceId)) {
+        throw new HttpError(403, "NOT_MODERATOR", "only moderators can change the moderator list");
+      }
+      const input = modsSchema.parse(await readJson(req));
+      const current = repo.getModerators(roomId);
+      const next = input.on
+        ? [...current, input.deviceId]
+        : current.filter((id) => id !== input.deviceId);
+      const moderators = repo.setModerators(roomId, next) ?? next;
+      broadcast(roomId, { t: "room.settings", moderators });
+      log("info", "room.moderators", {
+        room: roomId,
+        device: input.deviceId,
+        on: input.on,
+        by: caller.deviceId,
+      });
+      return sendJson(res, 200, { moderators });
+    }
+
+    const roomNotices = /^\/api\/rooms\/([^/]+)\/notices\/clear$/.exec(path);
+    if (method === "POST" && roomNotices) {
+      const roomId = decodeURIComponent(roomNotices[1]!);
+      const caller = requireToken(req, roomId);
+      if (!repo.isModerator(roomId, caller.deviceId)) {
+        throw new HttpError(403, "NOT_MODERATOR", "only moderators can clear join notices");
+      }
+      // One deliberate moderator action, one transaction, tombstones out —
+      // clients prune exactly like ordinary message deletions. This is the
+      // only path that removes system messages: msg.del rejects them for
+      // every actor, moderators included.
+      const cleared = repo.clearSystemMessages(roomId);
+      for (const tomb of cleared) {
+        broadcast(roomId, { t: "msg.new", msg: tomb.msg, rev: tomb.rev });
+      }
+      log("info", "room.notices_cleared", {
+        room: roomId,
+        count: cleared.length,
+        by: caller.deviceId,
+      });
+      return sendJson(res, 200, { cleared: cleared.length });
     }
 
     const fileCollection = /^\/api\/rooms\/([^/]+)\/files$/.exec(path);
@@ -219,6 +311,11 @@ const joinSchema = z.object({
   proof: b64,
 });
 
+const modsSchema = z.object({
+  deviceId: idPart,
+  on: z.boolean(),
+});
+
 /* --------------------------------------------------------------- helpers */
 
 function issue(error: z.ZodError): string {
@@ -239,7 +336,7 @@ function sendError(res: ServerResponse, status: number, code: string, message: s
   sendJson(res, status, { error: { code, message } });
 }
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+async function readBody(req: IncomingMessage): Promise<Buffer | null> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -250,9 +347,26 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
     }
     chunks.push(buf);
   }
-  if (size === 0) throw new ApiBodyError(400, "BAD_FRAME", "empty body");
+  if (size === 0) return null;
+  return Buffer.concat(chunks);
+}
+
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  const body = await readBody(req);
+  if (body === null) throw new ApiBodyError(400, "BAD_FRAME", "empty body");
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return JSON.parse(body.toString("utf8"));
+  } catch {
+    throw new ApiBodyError(400, "BAD_FRAME", "invalid json");
+  }
+}
+
+/** Like readJson, but an absent body yields null instead of a 400. */
+async function readJsonOptional(req: IncomingMessage): Promise<unknown | null> {
+  const body = await readBody(req);
+  if (body === null) return null;
+  try {
+    return JSON.parse(body.toString("utf8"));
   } catch {
     throw new ApiBodyError(400, "BAD_FRAME", "invalid json");
   }

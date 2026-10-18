@@ -18,6 +18,10 @@ const ROOM = "01DELROOM00000000000000001";
 
 function makeRoomAndDevices(): { channelId: string } {
   repo.createRoom({ id: ROOM, name: "Del", salt: "c2FsdA==", proof: "cHJvb2Y=" });
+  // Pin an empty moderator list: the first WS joiner would otherwise claim
+  // moderation via the bootstrap, turning the "attacker" device below into a
+  // legitimate moderator and defeating the ownership assertions.
+  repo.setModerators(ROOM, []);
   repo.upsertDevice({ id: "dev-a", roomId: ROOM, name: "Maya", color: "#111111" });
   repo.upsertDevice({ id: "dev-b", roomId: ROOM, name: "Ivo", color: "#222222" });
   const channelId = repo.listChannels(ROOM).find((c) => c.name === "general")!.id;

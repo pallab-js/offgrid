@@ -36,11 +36,20 @@ function fakeRes(): FakeRes & { writeHead: (status: number) => void; end: (chunk
   return res;
 }
 
-function fakeReq(token?: string): IncomingMessage {
+function fakeReq(token?: string, body?: unknown): IncomingMessage {
+  const payload = body === undefined ? "" : JSON.stringify(body);
   return {
     method: "POST",
-    headers: token ? { authorization: `Bearer ${token}` } : {},
+    headers: {
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(payload ? { "content-type": "application/json" } : {}),
+    },
     socket: { remoteAddress: "203.0.113.77" },
+    // handleApi drains the request (readJsonOptional) — a body-less request
+    // simply yields nothing.
+    async *[Symbol.asyncIterator](): AsyncIterator<Buffer> {
+      if (payload) yield Buffer.from(payload);
+    },
   } as unknown as IncomingMessage;
 }
 
@@ -78,6 +87,20 @@ describe("POST /api/rooms/:id/revoke", () => {
     const { status, body } = await revoke("never-issued-token-value-0123456789");
     expect(status).toBe(200);
     expect(body).toEqual({ revoked: true });
+  });
+
+  it("removes every token row the presenting device holds", () => {
+    // A device accumulates one token row per HTTP join; leaving via one of
+    // them must not leave the older rows alive.
+    const oldToken = repo.issueToken(ROOM, "dev-sib");
+    const presented = repo.issueToken(ROOM, "dev-sib");
+    expect(repo.resolveToken(oldToken, ROOM)).not.toBeNull();
+
+    return revoke(presented).then(({ status }) => {
+      expect(status).toBe(200);
+      expect(repo.resolveToken(presented, ROOM)).toBeNull();
+      expect(repo.resolveToken(oldToken, ROOM)).toBeNull();
+    });
   });
 
   it("closes live connections riding the revoked token", async () => {

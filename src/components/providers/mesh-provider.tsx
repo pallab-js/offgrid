@@ -14,6 +14,9 @@ import { useMapStore } from "@/stores/map";
 import { useSosStore } from "@/stores/sos";
 import { useBeaconStore } from "@/stores/beacon";
 import { flushAllOutboxes } from "@/lib/sync/outbox";
+import { resetRoomStores } from "@/stores/reset";
+import { toast } from "@/stores/toast";
+import { useRouter } from "next/navigation";
 
 /** Applies one sync/live event; resolves only when the store write lands in
  * IndexedDB — callers gate cursor advancement on this (see sync.batch). */
@@ -71,6 +74,7 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
   const token = useSessionStore((s) => s.token);
   const setCursor = useSessionStore((s) => s.setCursor);
   const hydrate = useSessionStore((s) => s.hydrate);
+  const router = useRouter();
   const typingTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const lastRttPush = useRef(0);
 
@@ -78,13 +82,41 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
     hydrate();
   }, [hydrate]);
 
+  /**
+   * A ref-less `error { code: "BAD_TOKEN" }` is a join rejection: the hub
+   * refuses this token because it was revoked (device kicked / left remotely)
+   * or the room passphrase was rotated (rotation revokes every token). The
+   * session can never recover on its own — drop it and send the user to the
+   * join screen instead of silently hanging half-connected.
+   */
+  const endSession = useCallback(() => {
+    if (!useSessionStore.getState().roomId) return; // already ended (reconnect race)
+    resetRoomStores();
+    useSessionStore.getState().leaveRoom();
+    toast("Your session ended — rejoin with the room's current passphrase", "error");
+    router.push("/join");
+  }, [router]);
+
   const applyFrame = useCallback((frame: ServerFrame) => {
     const mesh = useMeshStore.getState();
     switch (frame.t) {
       case "joined":
         mesh.setChannels(frame.channels);
+        useSessionStore.getState().setModerators(frame.moderators);
         meshSocket.send({ t: "sync.pull", cursor: useSessionStore.getState().cursor });
         void flushAllOutboxes();
+        break;
+      case "room.settings":
+        useSessionStore.getState().setModerators(frame.moderators);
+        break;
+      case "room.rotated":
+        // Live signal only: a close (4001) follows immediately and the BAD_TOKEN
+        // join rejection on the next attempt ends the session with a toast. The
+        // rotator itself is unaffected — it rejoins with the new passphrase
+        // before its own socket ever retries.
+        break;
+      case "error":
+        if (frame.code === "BAD_TOKEN" && !frame.ref) endSession();
         break;
       case "sync.batch": {
         // The cursor asserts "every event before it is durably in IndexedDB".
@@ -128,7 +160,7 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
         if (isMeshEvent(frame)) void routeEvent(frame);
         break;
     }
-  }, [setCursor]);
+  }, [setCursor, endSession]);
 
   // Socket lifecycle ---------------------------------------------------
   useEffect(() => {

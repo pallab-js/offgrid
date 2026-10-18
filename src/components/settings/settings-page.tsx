@@ -3,10 +3,13 @@
 import { useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Download, LogOut, Trash2 } from "lucide-react";
+import { Download, LogOut, Shield, Trash2, UserMinus } from "lucide-react";
 import { useSessionStore } from "@/stores/session";
+import { useMeshStore } from "@/stores/mesh";
 import { resetRoomStores } from "@/stores/reset";
-import { revokeOwnToken } from "@/lib/session/token";
+import { revokeOwnToken, revokeDeviceToken } from "@/lib/session/token";
+import { clearJoinNotices, setRoomModerator } from "@/lib/session/api";
+import type { Peer } from "@/lib/protocol";
 import { IDENTITY_COLORS, onColor } from "@/lib/utils/color";
 import { buildJoinUrl } from "@/lib/utils/invite";
 import { downloadExport, wipeLocalData } from "@/lib/data/export";
@@ -34,6 +37,8 @@ export function SettingsPage() {
   const roomId = useSessionStore((s) => s.roomId);
   const profile = useSessionStore((s) => s.profile);
   const leaveRoom = useSessionStore((s) => s.leaveRoom);
+  const deviceId = useSessionStore((s) => s.deviceId);
+  const moderators = useSessionStore((s) => s.moderators);
   const router = useRouter();
 
   const [exporting, setExporting] = useState(false);
@@ -120,6 +125,10 @@ export function SettingsPage() {
 
       {hasRoom && roomId ? (
         <InviteSection roomName={roomName ?? ""} roomId={roomId} />
+      ) : null}
+
+      {hasRoom && roomId && deviceId && moderators.includes(deviceId) ? (
+        <ModerationSection roomId={roomId} />
       ) : null}
 
       <section className="flex flex-col gap-4 rounded-xl border border-hairline bg-canvas p-5">
@@ -249,6 +258,123 @@ function InviteSection({ roomName, roomId }: { roomName: string; roomId: string 
         passphrase themselves. The code carries no secrets.
       </p>
       {joinUrl ? <InvitePanel url={joinUrl} /> : null}
+    </section>
+  );
+}
+
+/**
+ * Moderator tools: promote/demote devices, revoke a lost device's access
+ * (kills its live session too), bulk-clear join notices. Server enforces
+ * every action — the hub rejects non-moderators with NOT_MODERATOR; this
+ * UI only appears because the hub said this device is a moderator.
+ */
+function ModerationSection({ roomId }: { roomId: string }) {
+  const peers = useMeshStore((s) => s.peers);
+  const deviceId = useSessionStore((s) => s.deviceId);
+  const moderators = useSessionStore((s) => s.moderators);
+  const setModerators = useSessionStore((s) => s.setModerators);
+  const [busyDevice, setBusyDevice] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
+
+  async function toggleMod(peer: Peer): Promise<void> {
+    setBusyDevice(peer.deviceId);
+    try {
+      const next = await setRoomModerator(roomId, peer.deviceId, !moderators.includes(peer.deviceId));
+      setModerators(next);
+      toast(moderators.includes(peer.deviceId) ? `${peer.name} is no longer a moderator` : `${peer.name} is now a moderator`);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Could not update moderators", "error");
+    } finally {
+      setBusyDevice(null);
+    }
+  }
+
+  async function revokeAccess(peer: Peer): Promise<void> {
+    setBusyDevice(peer.deviceId);
+    try {
+      const tokens = await revokeDeviceToken(peer.deviceId);
+      if (tokens === null) throw new Error("Could not revoke access — try again");
+      toast(`${peer.name} lost access — they need the (new) passphrase to rejoin`);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Could not revoke access", "error");
+    } finally {
+      setBusyDevice(null);
+    }
+  }
+
+  async function onClearNotices(): Promise<void> {
+    setClearing(true);
+    try {
+      const cleared = await clearJoinNotices(roomId);
+      toast(cleared === 0 ? "No join notices to clear" : `Cleared ${cleared} join notice${cleared === 1 ? "" : "s"}`);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Could not clear join notices", "error");
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  return (
+    <section className="flex flex-col gap-4 rounded-xl border border-hairline bg-canvas p-5">
+      <h2 className="text-card-title">Moderation</h2>
+      <p className="text-body-sm">
+        Moderators can delete any member&apos;s message, remove a lost
+        device&apos;s access, and clear join notices. Everyone with the
+        passphrase is still equal — moderation is a convenience, not a
+        hierarchy: a passphrase holder can always rejoin.
+      </p>
+
+      <ul className="flex flex-col divide-y divide-hairline">
+        {peers.map((peer) => {
+          const isSelf = peer.deviceId === deviceId;
+          const isMod = moderators.includes(peer.deviceId);
+          return (
+            <li key={peer.deviceId} className="flex flex-wrap items-center gap-3 py-2">
+              <span
+                className="inline-flex size-8 shrink-0 items-center justify-center rounded-full caption"
+                style={{ backgroundColor: peer.color, color: onColor(peer.color) }}
+                aria-hidden="true"
+              >
+                {peer.name.slice(0, 2).toUpperCase()}
+              </span>
+              <span className="text-body-sm">{peer.name}</span>
+              {isMod ? <Pill tone="soft">mod</Pill> : null}
+              {!peer.online ? <span className="caption text-ink">offline</span> : null}
+              <span className="ml-auto flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  disabled={busyDevice === peer.deviceId}
+                  onClick={() => void toggleMod(peer)}
+                >
+                  <Shield className="size-4" aria-hidden="true" />
+                  {isSelf ? "Step down" : isMod ? "Revoke mod" : "Make mod"}
+                </Button>
+                {isSelf ? null : (
+                  <Button
+                    variant="secondary"
+                    disabled={busyDevice === peer.deviceId}
+                    onClick={() => void revokeAccess(peer)}
+                  >
+                    <UserMinus className="size-4" aria-hidden="true" />
+                    Revoke access
+                  </Button>
+                )}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="secondary" disabled={clearing} onClick={() => void onClearNotices()}>
+          <Trash2 className="size-4" aria-hidden="true" />
+          {clearing ? "Clearing…" : "Clear join notices"}
+        </Button>
+        <span className="caption text-ink">
+          Removes every &quot;joined&quot; notice in one action — the only way
+          system messages ever leave the room.
+        </span>
+      </div>
     </section>
   );
 }

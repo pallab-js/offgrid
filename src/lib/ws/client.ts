@@ -44,6 +44,7 @@ class MeshSocket {
   private ws: WebSocket | null = null;
   private config: SocketConfig | null = null;
   private running = false;
+  private joined = false;
   private attempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -128,13 +129,20 @@ class MeshSocket {
     const url = `${protocol}//${window.location.host}${WS_PATH}`;
     const ws = new WebSocket(url);
     this.ws = ws;
+    this.joined = false;
 
     ws.onopen = () => {
       if (!this.config) return;
       this.attempt = 0;
       this.send({ t: "join", token: this.config.token, device: this.config.device });
     };
-    ws.onmessage = (event) => this.handleMessage(String(event.data));
+    // Frames from a socket that has already been replaced (stop/start race on
+    // rapid session changes) must not leak into the new session — a stale
+    // join rejection could otherwise tear down a healthy session.
+    ws.onmessage = (event) => {
+      if (this.ws !== ws) return;
+      this.handleMessage(String(event.data));
+    };
     ws.onclose = () => {
       if (this.ws !== ws) return;
       this.ws = null;
@@ -182,6 +190,7 @@ class MeshSocket {
 
   private dispatchFrame(frame: ServerFrame): void {
     if (frame.t === "joined") {
+      this.joined = true;
       this.startHeartbeat();
       this.emitStatus("online");
     } else if (frame.t === "pong") {
@@ -206,6 +215,18 @@ class MeshSocket {
     }
 
     this.frameHandlers.forEach((handler) => handler(frame));
+
+    // A ref-less error before `joined` is a join rejection (revoked or
+    // rotated token): the hub leaves the socket open, but an unjoined socket
+    // never heartbeats and can never do anything — close it so the app layer
+    // sees a definite end state instead of a silent hang.
+    if (frame.t === "error" && !frame.ref && !this.joined) {
+      try {
+        this.ws?.close();
+      } catch {
+        /* already closing */
+      }
+    }
   }
 
   private startHeartbeat(): void {

@@ -16,6 +16,8 @@ interface SessionState {
   token: string | null;
   cursor: number;
   roomKeyB64: string | null;
+  /** Devices with moderation powers in the current room (rooms.settings.moderators). */
+  moderators: string[];
   hydrated: boolean;
 
   hydrate: () => void;
@@ -26,8 +28,10 @@ interface SessionState {
     roomName: string;
     token: string;
     roomKeyB64: string;
+    moderators?: string[];
     cursor?: number;
   }) => void;
+  setModerators: (moderators: string[]) => void;
   setCursor: (cursor: number) => void;
   leaveRoom: () => void;
   reset: () => void;
@@ -35,6 +39,12 @@ interface SessionState {
 
 const STORAGE_KEY = "offgrid.session.v1";
 const KEY_CACHE = "offgrid.roomkey.v1";
+/**
+ * Tab-scoped room metadata (moderator list) kept next to the tab-scoped room
+ * key: it is re-fetched on every join/`joined` frame, so caching it is a UX
+ * optimization, not a source of truth.
+ */
+const ROOM_META_KEY = "offgrid.roommeta.v1";
 
 interface PersistedSession {
   deviceId: string;
@@ -62,11 +72,31 @@ function writePersisted(state: Partial<PersistedSession> | null): void {
     if (!state) {
       localStorage.removeItem(STORAGE_KEY);
       sessionStorage.removeItem(KEY_CACHE);
+      sessionStorage.removeItem(ROOM_META_KEY);
       return;
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch {
     /* storage unavailable — session stays in memory */
+  }
+}
+
+function readRoomMeta(): { moderators: string[] } {
+  try {
+    const raw = sessionStorage.getItem(ROOM_META_KEY);
+    if (!raw) return { moderators: [] };
+    const parsed = JSON.parse(raw) as { moderators?: unknown };
+    return { moderators: Array.isArray(parsed.moderators) ? parsed.moderators : [] };
+  } catch {
+    return { moderators: [] };
+  }
+}
+
+function writeRoomMeta(moderators: string[]): void {
+  try {
+    sessionStorage.setItem(ROOM_META_KEY, JSON.stringify({ moderators }));
+  } catch {
+    /* ignore — moderators refresh on the next joined frame */
   }
 }
 
@@ -78,6 +108,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   token: null,
   cursor: 0,
   roomKeyB64: null,
+  moderators: [],
   hydrated: false,
 
   hydrate: () => {
@@ -90,6 +121,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
     const saved = readPersisted();
     if (saved) {
+      const { moderators } = readRoomMeta();
       set({
         deviceId: saved.deviceId,
         profile: saved.profile ?? null,
@@ -98,6 +130,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         token: saved.token,
         cursor: saved.cursor ?? 0,
         roomKeyB64,
+        moderators,
         hydrated: true,
       });
     } else {
@@ -129,17 +162,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (saved) writePersisted({ ...saved, profile });
   },
 
-  enterRoom: ({ roomId, roomName, token, roomKeyB64, cursor = 0 }) => {
+  enterRoom: ({ roomId, roomName, token, roomKeyB64, moderators = [], cursor = 0 }) => {
     const { deviceId, profile } = get();
-    set({ roomId, roomName, token, cursor, roomKeyB64 });
+    set({ roomId, roomName, token, cursor, roomKeyB64, moderators });
     try {
       sessionStorage.setItem(KEY_CACHE, roomKeyB64);
     } catch {
       /* ignore */
     }
+    writeRoomMeta(moderators);
     if (deviceId && profile) {
       writePersisted({ deviceId, profile, roomId, roomName, token, cursor });
     }
+  },
+
+  setModerators: (moderators) => {
+    if (!get().roomId) return; // room-less sessions have no moderation context
+    set({ moderators });
+    writeRoomMeta(moderators);
   },
 
   setCursor: (cursor) => {
@@ -155,6 +195,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   leaveRoom: () => {
     try {
       sessionStorage.removeItem(KEY_CACHE);
+      sessionStorage.removeItem(ROOM_META_KEY);
     } catch {
       /* ignore */
     }
@@ -166,6 +207,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       token: null,
       cursor: 0,
       roomKeyB64: null,
+      moderators: [],
     });
   },
 
@@ -179,6 +221,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       token: null,
       cursor: 0,
       roomKeyB64: null,
+      moderators: [],
       hydrated: true,
     });
   },

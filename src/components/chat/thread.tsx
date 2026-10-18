@@ -263,6 +263,7 @@ function MessageRow({
   const deleteMessage = useChatStore((s) => s.deleteMessage);
   const retryMessage = useChatStore((s) => s.retryMessage);
   const toggleReaction = useChatStore((s) => s.toggleReaction);
+  const moderators = useSessionStore((s) => s.moderators);
   const [pickerOpen, setPickerOpen] = useState(false);
 
   if (msg.kind === "system") {
@@ -280,6 +281,10 @@ function MessageRow({
       </div>
     );
   }
+
+  // Moderators may remove any member's message; the hub enforces this
+  // server-side (softDeleteMessage allowOthers) — the gate here is UX only.
+  const canDelete = isOwn || (myId !== null && moderators.includes(myId));
 
   const avatarColor = color ?? "#c5b0f4";
   const grouped = groupReactions(msg.reactions, myId);
@@ -425,7 +430,7 @@ function MessageRow({
             >
               <CornerUpLeft className="size-3.5" aria-hidden="true" />
             </button>
-            {isOwn ? (
+            {canDelete ? (
               <button
                 type="button"
                 onClick={() => void deleteMessage(msg)}

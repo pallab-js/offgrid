@@ -190,11 +190,23 @@ export const s2cSchema = z.discriminatedUnion("t", [
     device: deviceSchema,
     cursor: z.number().int().nonnegative(),
     serverTime: epochMs,
+    /** Devices with moderation powers (rooms.settings.moderators). */
+    moderators: z.array(idSchema).max(64).default([]),
   }),
   z.object({ t: z.literal("ack"), ref: idSchema, id: idSchema, rev: z.number().int().positive() }),
   z.object({ t: z.literal("error"), ref: idSchema.optional(), code: errorCode, message: z.string().max(400) }),
   z.object({ t: z.literal("pong"), ts: z.number(), serverTs: epochMs }),
   z.object({ t: z.literal("presence"), peers: z.array(peerSchema) }),
+  z.object({
+    t: z.literal("room.settings"),
+    /** Current moderator list — live-update after a moderation change. */
+    moderators: z.array(idSchema).max(64),
+  }),
+  z.object({
+    t: z.literal("room.rotated"),
+    /** New room salt after a passphrase rotation; all tokens are revoked. */
+    salt: z.string().min(8).max(512),
+  }),
   z.object({
     t: z.literal("typing"),
     channelId: idSchema,

@@ -110,6 +110,14 @@ function dispatch(conn: Conn, frame: ClientFrame): void {
       conn.tokenHash = resolved.tokenHash;
       enterRoom(conn, resolved.roomId);
 
+      // First device into an untouched room becomes its moderator (also
+      // attempted at HTTP join — whichever lands first wins, the claim is
+      // transactional). Live members get the list if it just changed.
+      const claimed = repo.claimModeratorIfUnset(resolved.roomId, device.id);
+      if (claimed) {
+        broadcast(resolved.roomId, { t: "room.settings", moderators: claimed });
+      }
+
       send(conn, {
         t: "joined",
         room: { id: meta.id, name: meta.name },
@@ -117,6 +125,7 @@ function dispatch(conn: Conn, frame: ClientFrame): void {
         device,
         cursor: currentRev(),
         serverTime: Date.now(),
+        moderators: repo.getModerators(resolved.roomId),
       });
       emitPresence(resolved.roomId);
       const system = repo.insertSystemMessageIfQuiet(
@@ -183,8 +192,11 @@ function dispatch(conn: Conn, frame: ClientFrame): void {
       // Authorization runs inside the repo transaction, before the mutation
       // commits: the old check-after-commit persisted unauthorized deletes
       // (rev bumped, visible on the next sync pull) while the sender only
-      // saw an error frame. System messages are rejected outright.
-      const result = repo.softDeleteMessage(room, frame.id, conn.device!.id);
+      // saw an error frame. System messages are rejected outright — even for
+      // moderators (bulk-clear is the notices endpoint); moderators may
+      // delete other members' messages, everyone may delete their own.
+      const allowOthers = repo.isModerator(room, conn.device!.id);
+      const result = repo.softDeleteMessage(room, frame.id, conn.device!.id, allowOthers);
       if (!result) throw new repo.RepoError("BAD_FRAME", "message not found");
       ack(conn, frame.clientId, result.msg.id, result.rev);
       if (result.changed) emit(room, { t: "msg.new", msg: result.msg, rev: result.rev });

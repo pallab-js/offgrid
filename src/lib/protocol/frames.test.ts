@@ -215,6 +215,56 @@ describe("s2c frames", () => {
   });
 });
 
+describe("moderation & rotation s2c frames", () => {
+  it("joined defaults moderators to an empty list", () => {
+    const parsed = s2cSchema.safeParse({
+      t: "joined",
+      room: { id: "r1", name: "Field" },
+      channels: [],
+      device: { id: "d1", name: "Dan", color: "#c8e6cd" },
+      cursor: 1,
+      serverTime: Date.now(),
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.t === "joined") {
+      expect(parsed.data.moderators).toEqual([]);
+    }
+  });
+
+  it("accepts room.settings and room.rotated, rejects oversized lists", () => {
+    expect(
+      s2cSchema.safeParse({ t: "room.settings", moderators: ["dev-a"] }).success,
+    ).toBe(true);
+    expect(
+      s2cSchema.safeParse({
+        t: "room.rotated",
+        salt: "bmV3c2FsdG5ld3NhbHRuZXc=",
+      }).success,
+    ).toBe(true);
+    expect(
+      s2cSchema.safeParse({
+        t: "room.settings",
+        moderators: Array.from({ length: 65 }, (_, i) => `d${i}`),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("control frames are not sync events", () => {
+    expect(isMeshEvent({ t: "room.settings" })).toBe(false);
+    expect(isMeshEvent({ t: "room.rotated" })).toBe(false);
+  });
+
+  it("error frames accept the NOT_MODERATOR code", () => {
+    expect(
+      s2cSchema.safeParse({
+        t: "error",
+        code: "NOT_MODERATOR",
+        message: "only moderators can change the moderator list",
+      }).success,
+    ).toBe(true);
+  });
+});
+
 describe("isMeshEvent", () => {
   it("classifies control vs event frames", () => {
     expect(isMeshEvent({ t: "msg.new" })).toBe(true);
