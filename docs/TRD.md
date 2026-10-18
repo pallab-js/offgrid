@@ -199,7 +199,7 @@ CREATE TABLE IF NOT EXISTS beacons (
 CREATE TABLE IF NOT EXISTS rev_seq (v INTEGER NOT NULL);  -- single row, incremented per change
 ```
 
-Migrations: idempotent `CREATE TABLE IF NOT EXISTS` in `schema.ts`, plus guarded `ALTER TABLE … ADD COLUMN` for `messages.reactions`, `files.enc` on pre-existing DBs (no `schema_version` needed yet). **DB file is gitignored**; schema lives in code.
+Migrations: forward-only runner in `schema.ts` — `meta.schema_version` records the last applied step; each pending `Migration { id, name, up }` runs in its own transaction **together with its version bump** (SQLite DDL is transactional → a failed step rolls back schema + version and is retried on next open); steps apply in id order; a database from a newer build (version ahead of code) is left untouched with `db.schema_ahead`. Baseline (id 1) is idempotent DDL in the latest shape; id 2 backfills `messages.reactions`/`files.enc` for pre-runner databases (guarded `ALTER … ADD COLUMN`). **DB file is gitignored**; schema lives in code.
 
 ## 6. Client data
 
