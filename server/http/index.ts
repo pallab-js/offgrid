@@ -7,7 +7,7 @@ import { config, filesDir } from "../config";
 import { fileCipherSize } from "../../src/lib/protocol/constants";
 import { currentRev } from "../db/index";
 import * as repo from "../db/repo";
-import { broadcast, connectionCount } from "../ws/registry";
+import { broadcast, connectionCount, roomConns, send } from "../ws/registry";
 import { clientIp, httpLimiter, joinLimiter, roomCreateLimiter } from "../ratelimit";
 import { log } from "../log";
 
@@ -118,6 +118,36 @@ export async function handleApi(
       res.end(body);
       log("info", "room.export", { room: roomId });
       return;
+    }
+
+    const roomRevoke = /^\/api\/rooms\/([^/]+)\/revoke$/.exec(path);
+    if (method === "POST" && roomRevoke) {
+      const roomId = decodeURIComponent(roomRevoke[1]!);
+      const header = req.headers.authorization;
+      if (!header?.startsWith("Bearer ")) {
+        throw new HttpError(401, "BAD_TOKEN", "missing bearer token");
+      }
+      const token = header.slice(7);
+      // Idempotent and oracle-free: an unknown, already-expired or
+      // foreign-room token deletes nothing but gets the same 200 — the
+      // response never reveals whether a presented token was live.
+      if (repo.revokeToken(token, roomId)) {
+        // Kill live connections riding the revoked token — otherwise an
+        // established WS keeps full room access until it happens to
+        // reconnect (and re-auth with the now-dead token).
+        const hash = repo.hashToken(token);
+        for (const conn of roomConns(roomId)) {
+          if (conn.tokenHash !== hash) continue;
+          send(conn, { t: "error", code: "BAD_TOKEN", message: "token revoked" });
+          try {
+            conn.ws.close(4001, "token revoked");
+          } catch {
+            /* socket is already dying */
+          }
+        }
+        log("info", "room.revoke", { room: roomId });
+      }
+      return sendJson(res, 200, { revoked: true });
     }
 
     const fileCollection = /^\/api\/rooms\/([^/]+)\/files$/.exec(path);

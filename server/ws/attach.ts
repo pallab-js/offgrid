@@ -22,6 +22,7 @@ export function attachWs(wss: WebSocketServer): void {
       rateLimitedAt: 0,
       rttMs: null,
       battery: null,
+      tokenHash: null,
     };
     addConn(conn);
 

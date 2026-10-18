@@ -1,4 +1,4 @@
-import { vi, describe, it, expect, afterAll } from "vitest";
+import { vi, describe, it, expect, beforeAll, afterAll } from "vitest";
 
 vi.hoisted(() => {
   process.env.DATA_DIR = `/tmp/offgrid-auth-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -6,7 +6,7 @@ vi.hoisted(() => {
 });
 
 import * as repo from "../db/repo";
-import { closeDb } from "../db/index";
+import { closeDb, getDb } from "../db/index";
 import { handleMessage } from "./dispatch";
 import type { Conn } from "./registry";
 
@@ -85,5 +85,74 @@ describe("token-bound device identity (WS join)", () => {
       .map((raw) => JSON.parse(raw) as { t: string; code?: string })
       .find((f) => f.t === "error");
     expect(err?.code).toBe("BAD_TOKEN");
+  });
+});
+
+describe("token expiry + revocation (WS join)", () => {
+  beforeAll(() => {
+    try {
+      makeRoom(); // idempotent across the file's earlier test
+    } catch {
+      /* already created */
+    }
+  });
+
+  function joinWith(token: string): Conn & { sent: string[] } {
+    const conn = fakeConn();
+    handleMessage(
+      conn,
+      JSON.stringify({
+        t: "join",
+        token,
+        device: { id: "dev-honest", name: "Honest", color: "#111111" },
+      }),
+    );
+    return conn;
+  }
+
+  function firstError(conn: Conn & { sent: string[] }): { code?: string } | undefined {
+    return conn.sent
+      .map((raw) => JSON.parse(raw) as { t: string; code?: string })
+      .find((f) => f.t === "error");
+  }
+
+  it("rejects an expired token", () => {
+    const token = repo.issueToken(ROOM, "dev-honest");
+    getDb()
+      .prepare("UPDATE tokens SET expires_at = ? WHERE hash = ?")
+      .run(Date.now() - 1, repo.hashToken(token));
+
+    const conn = joinWith(token);
+
+    expect(firstError(conn)?.code).toBe("BAD_TOKEN");
+    expect(conn.roomId).toBeNull();
+    expect(conn.device).toBeNull();
+  });
+
+  it("rejects a revoked token", () => {
+    const token = repo.issueToken(ROOM, "dev-honest");
+    expect(repo.revokeToken(token, ROOM)).toBe(true);
+
+    const conn = joinWith(token);
+
+    expect(firstError(conn)?.code).toBe("BAD_TOKEN");
+    expect(conn.roomId).toBeNull();
+  });
+
+  it("binds conn.tokenHash and slides expiry on a successful join", () => {
+    const token = repo.issueToken(ROOM, "dev-honest");
+    const soon = Date.now() + 60_000;
+    getDb()
+      .prepare("UPDATE tokens SET expires_at = ? WHERE hash = ?")
+      .run(soon, repo.hashToken(token));
+
+    const conn = joinWith(token);
+
+    expect(conn.roomId).toBe(ROOM);
+    expect(conn.tokenHash).toBe(repo.hashToken(token));
+    const row = getDb()
+      .prepare("SELECT expires_at FROM tokens WHERE hash = ?")
+      .get(repo.hashToken(token)) as { expires_at: number };
+    expect(row.expires_at).toBeGreaterThan(soon); // slid forward by the join
   });
 });

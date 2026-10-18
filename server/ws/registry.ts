@@ -21,6 +21,9 @@ export interface Conn {
   rateLimitedAt: number;
   rttMs: number | null;
   battery: number | null;
+  /** sha256 of the bearer token used to join — lets revocation find the
+   * live sessions riding a revoked token. Null until joined. */
+  tokenHash: string | null;
 }
 
 const byRoom = new Map<string, Set<Conn>>();
@@ -58,6 +61,7 @@ export function exitRoom(conn: Conn): void {
   if (set && set.size === 0) byRoom.delete(conn.roomId);
   conn.roomId = null;
   conn.device = null;
+  conn.tokenHash = null;
 }
 
 export function roomConns(roomId: string): Conn[] {

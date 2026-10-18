@@ -1,4 +1,5 @@
 import type { Database } from "better-sqlite3";
+import { config } from "../config";
 import { log } from "../log";
 
 /**
@@ -40,7 +41,8 @@ const BASELINE_DDL = `
     hash TEXT PRIMARY KEY,
     room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
     device_id TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS channels (
@@ -214,6 +216,22 @@ export const MIGRATIONS: Migration[] = [
       if (!hasColumn(db, "files", "enc")) {
         db.exec("ALTER TABLE files ADD COLUMN enc TEXT NOT NULL DEFAULT 'none'");
       }
+    },
+  },
+  {
+    id: 3,
+    name: "tokens.expires_at (sliding expiry)",
+    up: (db) => {
+      if (!hasColumn(db, "tokens", "expires_at")) {
+        db.exec("ALTER TABLE tokens ADD COLUMN expires_at INTEGER");
+      }
+      // One-time grace: every pre-migration token gets a full window from
+      // the upgrade moment, so no deployed device is locked out at the
+      // moment expiry ships; the window then slides on each authenticated
+      // use and lapses only after TOKEN_TTL_DAYS of disuse.
+      db.prepare("UPDATE tokens SET expires_at = ? WHERE expires_at IS NULL").run(
+        Date.now() + config.tokenTtlMs,
+      );
     },
   },
 ];

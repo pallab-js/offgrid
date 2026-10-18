@@ -40,7 +40,7 @@ The passphrase never reaches the server: it derives an AES-GCM key in each brows
 
 - **Room content is encrypted at rest, but the network is cleartext by default.** On a Wi-Fi network you don't control, a passive observer can see message ciphertext, file bytes, room salts, join proofs (which enable *offline* passphrase guessing) and bearer tokens — and an active attacker can tamper with the app code served over plain HTTP. This matches the v1 threat model of a trusted/controlled LAN; the full analysis is in [docs/SDA.md](docs/SDA.md).
 - **On a network you don't control, enable TLS:** `ENABLE_TLS=true TLS_CERT=/path/to/cert.pem TLS_KEY=/path/to/key.pem pnpm start`. The app, API and WebSocket all follow automatically (`https`/`wss`). Self-signed certificates show a warning on each joining device until you install your CA there.
-- Always-on protections regardless of transport: join guesses are rate-limited (10/min per IP+room), device identity is bound to its token server-side (a stolen token cannot impersonate another device), and every frame/body is schema-validated.
+- Always-on protections regardless of transport: join guesses are rate-limited (10/min per IP+room), device identity is bound to its token server-side (a stolen token cannot impersonate another device), tokens expire after 30 days of disuse (the window slides on every authenticated use) and are revoked server-side — including any live connections riding them — when you Leave the room or wipe, and every frame/body is schema-validated.
 - There is **no passphrase recovery** — see Troubleshooting; and use Settings → Danger zone to wipe a device that leaves service.
 
 Production build:

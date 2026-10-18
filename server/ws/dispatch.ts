@@ -105,6 +105,9 @@ function dispatch(conn: Conn, frame: ClientFrame): void {
         color: device.color,
       });
       conn.device = device;
+      // Bind the connection to the exact token that authenticated it so a
+      // later revoke can close precisely the sessions riding it.
+      conn.tokenHash = resolved.tokenHash;
       enterRoom(conn, resolved.roomId);
 
       send(conn, {

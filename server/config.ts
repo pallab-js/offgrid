@@ -11,6 +11,9 @@ export const config = {
   // export HOSTNAME (machine/container id, not an address), which made the
   // hub crash on startup with ENOTFOUND. Bind address must be explicit.
   bindHost: process.env.BIND_HOST ?? "0.0.0.0",
+  // Room-join bearer tokens lapse after this long WITHOUT an authenticated
+  // use; every use slides the window forward (see repo.resolveToken).
+  tokenTtlMs: int(process.env.TOKEN_TTL_DAYS, 30) * 86_400_000,
   dataDir: path.resolve(process.env.DATA_DIR ?? path.join(process.cwd(), "data")),
   maxFileBytes: int(process.env.MAX_FILE_BYTES, 512 * 1024 * 1024),
   maxJsonBody: int(process.env.MAX_JSON_BODY, 32_768),

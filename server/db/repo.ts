@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { getDb, nextRev, currentRev } from "./index";
+import { config } from "../config";
 import { randomToken, ulid } from "../../src/lib/utils/id";
 import type {
   Beacon,
@@ -133,28 +134,57 @@ export function verifyProof(roomId: string, proofB64: string): boolean {
   return timingSafeEqual(a, b);
 }
 
+/** sha256 of a bearer token — the stored form; also binds live connections. */
+export function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
 export function issueToken(roomId: string, deviceId: string): string {
   const token = randomToken(32);
-  const hash = createHash("sha256").update(token).digest("hex");
+  const hash = hashToken(token);
   getDb()
     .prepare(
-      "INSERT INTO tokens (hash, room_id, device_id, created_at) VALUES (?, ?, ?, ?)",
+      "INSERT INTO tokens (hash, room_id, device_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
     )
-    .run(hash, roomId, deviceId, Date.now());
+    .run(hash, roomId, deviceId, Date.now(), Date.now() + config.tokenTtlMs);
   return token;
 }
 
+/**
+ * Resolves a bearer token for a room. Expired tokens are invalid; every
+ * successful resolution slides the expiry one TTL forward (an authenticated
+ * use = the device is alive), so active devices never lapse while an
+ * abandoned or stolen token dies within TOKEN_TTL_DAYS of its last use.
+ * Returns the token's hash so callers can bind it to the connection and
+ * later revoke exactly the live sessions riding it.
+ */
 export function resolveToken(
   token: string,
   roomId?: string,
-): { roomId: string; deviceId: string } | null {
-  const hash = createHash("sha256").update(token).digest("hex");
+): { roomId: string; deviceId: string; tokenHash: string } | null {
+  const hash = hashToken(token);
+  const now = Date.now();
   const row = getDb()
-    .prepare("SELECT room_id, device_id FROM tokens WHERE hash = ?")
-    .get(hash) as { room_id: string; device_id: string } | undefined;
+    .prepare("SELECT room_id, device_id, expires_at FROM tokens WHERE hash = ?")
+    .get(hash) as { room_id: string; device_id: string; expires_at: number | null } | undefined;
   if (!row) return null;
   if (roomId && row.room_id !== roomId) return null;
-  return { roomId: row.room_id, deviceId: row.device_id };
+  if (row.expires_at !== null && row.expires_at <= now) return null; // lapsed
+  const next = now + config.tokenTtlMs;
+  getDb()
+    .prepare(
+      "UPDATE tokens SET expires_at = ? WHERE hash = ? AND (expires_at IS NULL OR expires_at < ?)",
+    )
+    .run(next, hash, next); // no-op write when the window barely moved
+  return { roomId: row.room_id, deviceId: row.device_id, tokenHash: hash };
+}
+
+/** Room-scoped deletion of one token. True when a row was actually removed. */
+export function revokeToken(token: string, roomId: string): boolean {
+  const result = getDb()
+    .prepare("DELETE FROM tokens WHERE hash = ? AND room_id = ?")
+    .run(hashToken(token), roomId);
+  return result.changes > 0;
 }
 
 /* ------------------------------------------------------------ channels */

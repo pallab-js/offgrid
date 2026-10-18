@@ -165,4 +165,37 @@ describe("migration runner", () => {
     expect(hasColumn(db, "messages", "reactions")).toBe(true);
     db.close();
   });
+
+  it("adds tokens.expires_at with a one-time grace for pre-expiry tokens", () => {
+    const db = openDb();
+    migrate(db, MIGRATIONS.filter((m) => m.id < 3));
+    // Baseline is latest-shape; drop the column to emulate a pre-expiry DB.
+    db.exec("ALTER TABLE tokens DROP COLUMN expires_at");
+    db.prepare("INSERT INTO rooms (id, name, salt, proof, created_at) VALUES (?, ?, ?, ?, ?)").run(
+      "r-grace",
+      "Grace",
+      "c2FsdA==",
+      "cHJvb2Y=",
+      Date.now(),
+    );
+    // Minted 40 days ago: created_at + TTL would already be in the past, so
+    // a naive backfill would lock the device out at the upgrade moment.
+    const issued = Date.now() - 40 * 86_400_000;
+    db.prepare("INSERT INTO tokens (hash, room_id, device_id, created_at) VALUES (?, ?, ?, ?)").run(
+      "hash-grace",
+      "r-grace",
+      "d1",
+      issued,
+    );
+
+    migrate(db);
+
+    expect(hasColumn(db, "tokens", "expires_at")).toBe(true);
+    const row = db.prepare("SELECT expires_at FROM tokens WHERE hash = 'hash-grace'").get() as {
+      expires_at: number;
+    };
+    expect(row.expires_at).toBeGreaterThan(Date.now()); // grace, not expired
+    expect(version(db)).toBe(LATEST);
+    db.close();
+  });
 });

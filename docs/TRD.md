@@ -31,6 +31,7 @@
 | `PORT` | `3000` | hub listen port |
 | `HOSTNAME` → `BIND_HOST` | `0.0.0.0` | bind address (all interfaces for LAN). Renamed from `HOSTNAME`: shells and container runtimes export `HOSTNAME` as a machine/container id, not an address (startup used to die with ENOTFOUND); the hub now reads `BIND_HOST` only. |
 | `DATA_DIR` | `./data` | SQLite + file store + logs |
+| `TOKEN_TTL_DAYS` | `30` | room-join bearer tokens lapse after this many days without an authenticated use; every use (WS join, Bearer-authenticated HTTP) slides the window forward |
 | `MAX_FILE_BYTES` | `536870912` (512 MB) | upload cap |
 | `MAX_FRAME_BYTES` | `1048576` (1 MB) | ws frame cap |
 | `LOG_LEVEL` | `info` | `debug/info/warn/error` |
@@ -47,6 +48,7 @@ All responses `application/json; charset=utf-8`. Errors: `{ "error": { "code": s
 | `POST /api/rooms` | `{ roomId, name, salt, proof }` | `{ roomId, channels: [...] }` | creates room + default channels (`general`, `logistics`, `sos`); `sos` is system channel, non-deletable |
 | `GET /api/rooms/:id/meta` | — | `{ name, salt, createdAt }` | needed to derive proof; no secret leaked |
 | `POST /api/rooms/:id/join` | `{ deviceId, name, color, proof }` | `{ token, serverTime }` | 403 `BAD_PROOF` on mismatch |
+| `POST /api/rooms/:id/revoke` | — (Bearer) | `{ revoked: true }` | deletes the presented token (room-scoped) and closes live WS connections riding it (close 4001 `token revoked`); idempotent + no validity oracle: unknown/expired/foreign tokens return the same 200 |
 | `POST /api/rooms/:id/channels` | `{ name }` | `{ channel }` | auth; slugified unique per room |
 | `POST /api/rooms/:id/files` | raw body | `{ fileId, rev, size, enc }` | auth; headers: `X-File-Name` (URI-encoded sealed name), `X-File-Iv`, `X-File-Mime`, `X-File-Id` (client ULID, idempotent). Client-encrypted uploads add `X-Enc: gcm1`, `X-Plain-Size` and multipart framing `X-Part`/`X-More`: stored bytes are AES-GCM ciphertext (64 KiB frames), `size` reports plaintext length, `sha256` covers stored bytes |
 | `GET /api/rooms/:id/files/:fileId` | — | bytes | auth; supports `Range: bytes=a-b` → 206 + `Content-Range`; `HEAD` returns metadata only |
@@ -263,6 +265,7 @@ UI writes to IDB first, then the outbox/socket; server ack confirms and stamps `
 8. Abuse surfaces are budgeted: join guesses 10/min per IP+room, room creation 10/min per IP, WS frames 60/s per connection and 480/s per IP, ≤ 32 sockets per IP — and the WS upgrade rejects foreign `Origin` headers.
 9. Device identity is server-issued: the WS `join` derives `conn.device.id` from the **token row**, never from the frame (a differing frame id is ignored and logged as `ws.join.device_mismatch`) — all ownership checks (`msg.del`, file delete, authorship, presence) therefore read a token-bound identity. Residual trust is the PSK model itself: anyone who knows the passphrase proof can mint a token for any device id at HTTP join.
 10. LWW inputs are time-bounded: client-supplied timestamps (`updatedAt` on note/wp/check/sos/file frames, `msg.read.at`) must be ≤ 1 h ahead of the server clock at parse time (`MAX_FUTURE_SKEW_MS`) or the frame is rejected `BAD_FRAME`. The past is unbounded (offline replay of days-old edits is legitimate); the future is capped because an item stamped far ahead wins every LWW comparison **forever**, locking it room-wide. s2c schemas stay unbounded — server-stamped values are authoritative and a slow client clock must not reject valid server frames.
+11. Room-join tokens have a lifecycle: they expire `TOKEN_TTL_DAYS` (default 30) after their last authenticated use — each use slides the window forward, so active devices never lapse while abandoned credentials die (migration 3 grants existing tokens a one-time grace window so nobody is locked out at upgrade). Revocation: `POST /api/rooms/:id/revoke` with the token itself deletes it room-scoped and immediately closes every live WS connection bound to its hash (`conn.tokenHash`, close 4001) — called fire-and-forget by both Leave flows and wipe. The response is identical for unknown/expired tokens (200) so the endpoint is not a validity oracle; tokens are stored sha256-hashed and never logged.
 
 ## 10. Acceptance criteria per requirement area
 

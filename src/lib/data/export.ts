@@ -4,6 +4,7 @@ import { getDb } from "@/lib/idb/db";
 import type { Cipher } from "@/lib/protocol";
 import { openText } from "@/lib/crypto/keycache";
 import { useSessionStore } from "@/stores/session";
+import { revokeOwnToken } from "@/lib/session/token";
 import { saveBlob } from "@/lib/files/api";
 
 export const EXPORT_FORMAT = "offgrid-export";
@@ -137,6 +138,7 @@ export function downloadExport(): Promise<void> {
 
 /** Full local wipe: session, room key cache, and the IndexedDB database. */
 export async function wipeLocalData(): Promise<void> {
+  revokeOwnToken(); // before session state clears — fire-and-forget
   const { reset } = useSessionStore.getState();
   reset();
   try {

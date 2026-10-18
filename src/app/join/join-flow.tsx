@@ -16,6 +16,7 @@ import { ulid } from "@/lib/utils/id";
 import { IDENTITY_COLORS, onColor } from "@/lib/utils/color";
 import { useSessionStore } from "@/stores/session";
 import { resetRoomStores } from "@/stores/reset";
+import { revokeOwnToken } from "@/lib/session/token";
 import { cn } from "@/lib/utils/cn";
 
 type Mode = "create" | "join";
@@ -254,6 +255,7 @@ export function JoinFlow() {
                   <Button
                     variant="secondary"
                     onClick={() => {
+                      revokeOwnToken(); // before session state clears
                       resetRoomStores();
                       session.reset();
                       setMode("create");
