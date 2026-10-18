@@ -143,6 +143,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setCursor: (cursor) => {
+    // Sync cursors only ever move forward: a stale in-flight batch from a
+    // dropped connection must not regress the cursor (belt-and-braces behind
+    // the guard in mesh-provider's sync.batch handler).
+    if (cursor <= get().cursor) return;
     set({ cursor });
     const saved = readPersisted();
     if (saved) writePersisted({ ...saved, cursor });

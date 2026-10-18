@@ -177,7 +177,7 @@ export const useChatStore = create<ChatState>((set, get) => {
   }
 
   async function refreshPendingCount(): Promise<void> {
-    const pending = await listPending();
+    const pending = await listPending(useSessionStore.getState().roomId);
     set({ pendingCount: pending.length });
   }
 
@@ -350,7 +350,9 @@ export const useChatStore = create<ChatState>((set, get) => {
       try {
         if (!meshSocket.isOpen) return;
         await flushReactions();
-        const pending = await listPending();
+        // Scoped to the connected room — pending rows from another room stay
+        // queued until that room is re-entered.
+        const pending = await listPending(useSessionStore.getState().roomId);
         for (const record of pending) {
           if (!meshSocket.isOpen) return;
           try {

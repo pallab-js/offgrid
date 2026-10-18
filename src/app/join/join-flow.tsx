@@ -15,6 +15,7 @@ import { randomB64 } from "@/lib/crypto/base64";
 import { ulid } from "@/lib/utils/id";
 import { IDENTITY_COLORS, onColor } from "@/lib/utils/color";
 import { useSessionStore } from "@/stores/session";
+import { resetRoomStores } from "@/stores/reset";
 import { cn } from "@/lib/utils/cn";
 
 type Mode = "create" | "join";
@@ -178,6 +179,12 @@ export function JoinFlow() {
     }
     const { token } = (await res.json()) as { token: string };
 
+    // Switching rooms in-place: drop the previous room's in-memory state first
+    // (loaded guards would otherwise keep its data and block re-hydration).
+    const current = useSessionStore.getState();
+    if (current.roomId && current.roomId !== input.roomId) {
+      resetRoomStores();
+    }
     if (!useSessionStore.getState().deviceId) {
       useSessionStore.getState().ensureDevice(profile.name, profile.color);
     } else {
@@ -247,6 +254,7 @@ export function JoinFlow() {
                   <Button
                     variant="secondary"
                     onClick={() => {
+                      resetRoomStores();
                       session.reset();
                       setMode("create");
                       setRoomRef("");

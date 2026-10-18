@@ -15,40 +15,42 @@ import { useSosStore } from "@/stores/sos";
 import { useBeaconStore } from "@/stores/beacon";
 import { flushAllOutboxes } from "@/lib/sync/outbox";
 
-function routeEvent(event: MeshEvent): void {
+/** Applies one sync/live event; resolves only when the store write lands in
+ * IndexedDB — callers gate cursor advancement on this (see sync.batch). */
+async function routeEvent(event: MeshEvent): Promise<void> {
   switch (event.t) {
     case "msg.new":
-      void useChatStore.getState().applyIncoming(event.msg);
+      await useChatStore.getState().applyIncoming(event.msg);
       break;
     case "file.new":
-      void useFilesStore.getState().applyIncoming(event.file, event.rev);
+      await useFilesStore.getState().applyIncoming(event.file, event.rev);
       break;
     case "file.deleted":
-      void useFilesStore.getState().markDeleted(event.id, event.rev);
+      await useFilesStore.getState().markDeleted(event.id, event.rev);
       break;
     case "note.upsert":
-      void useNotesStore.getState().applyIncoming(event.note, event.rev);
+      await useNotesStore.getState().applyIncoming(event.note, event.rev);
       break;
     case "note.deleted":
-      void useNotesStore.getState().applyDeleted(event.id, event.rev);
+      await useNotesStore.getState().applyDeleted(event.id, event.rev);
       break;
     case "check.update":
-      void useChecklistStore.getState().applyUpdate(event);
+      await useChecklistStore.getState().applyUpdate(event);
       break;
     case "wp.upsert":
-      void useMapStore.getState().applyUpsert(event.waypoint, event.rev);
+      await useMapStore.getState().applyUpsert(event.waypoint, event.rev);
       break;
     case "wp.deleted":
-      void useMapStore.getState().applyDelete(event.id, event.rev);
+      await useMapStore.getState().applyDelete(event.id, event.rev);
       break;
     case "sos.raised":
-      void useSosStore.getState().applyRaised(event.sos, event.rev);
+      await useSosStore.getState().applyRaised(event.sos, event.rev);
       break;
     case "sos.cleared":
-      void useSosStore.getState().applyCleared(event.id, event.rev);
+      await useSosStore.getState().applyCleared(event.id, event.rev);
       break;
     case "beacon.new":
-      void useBeaconStore.getState().applyBeacon(event.beacon);
+      await useBeaconStore.getState().applyBeacon(event.beacon);
       break;
     case "channel.read":
       useMeshStore.getState().setRead(event.channelId, event.deviceId, event.at);
@@ -84,11 +86,26 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
         meshSocket.send({ t: "sync.pull", cursor: useSessionStore.getState().cursor });
         void flushAllOutboxes();
         break;
-      case "sync.batch":
-        frame.events.forEach(routeEvent);
-        setCursor(frame.cursor);
-        if (!frame.done) meshSocket.send({ t: "sync.pull", cursor: frame.cursor });
+      case "sync.batch": {
+        // The cursor asserts "every event before it is durably in IndexedDB".
+        // Advancing it before the async applies resolve lets a crash in
+        // between permanently skip the batch (it would never be re-requested).
+        // The cursor therefore moves only after the whole batch is applied,
+        // and the next pull goes out only then — so batches stay sequential.
+        void Promise.all(frame.events.map(routeEvent))
+          .then(() => {
+            const current = useSessionStore.getState().cursor;
+            if (frame.cursor <= current) return; // stale batch from a dropped connection
+            setCursor(frame.cursor);
+            if (!frame.done) meshSocket.send({ t: "sync.pull", cursor: frame.cursor });
+          })
+          .catch((error) => {
+            // Cursor stays put: the batch replays (idempotent LWW guards)
+            // on the next pull/reconnect.
+            console.error("sync.batch: apply failed, cursor not advanced", error);
+          });
         break;
+      }
       case "presence":
         mesh.setPresence(frame.peers);
         break;
@@ -108,7 +125,7 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
         break;
       }
       default:
-        if (isMeshEvent(frame)) routeEvent(frame);
+        if (isMeshEvent(frame)) void routeEvent(frame);
         break;
     }
   }, [setCursor]);

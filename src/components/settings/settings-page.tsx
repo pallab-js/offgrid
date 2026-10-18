@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Download, LogOut, Trash2 } from "lucide-react";
 import { useSessionStore } from "@/stores/session";
+import { resetRoomStores } from "@/stores/reset";
 import { IDENTITY_COLORS, onColor } from "@/lib/utils/color";
 import { buildJoinUrl } from "@/lib/utils/invite";
 import { downloadExport, wipeLocalData } from "@/lib/data/export";
@@ -53,6 +54,7 @@ export function SettingsPage() {
 
   function onLeave(): void {
     setLeaving(true);
+    resetRoomStores();
     leaveRoom();
     router.push("/");
   }

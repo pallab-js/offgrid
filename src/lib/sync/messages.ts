@@ -54,12 +54,15 @@ export async function listByChannel(channelId: string): Promise<MessageRecord[]>
   return rows.sort(compareMessages);
 }
 
-/** Outbox: unsent messages plus tombstones still owed to the hub. */
-export async function listPending(): Promise<MessageRecord[]> {
+/** Outbox: unsent messages plus tombstones still owed to the hub — only for
+ * `roomId`, so a pending message from room A can't flush while the socket is
+ * connected to room B. */
+export async function listPending(roomId: string | null): Promise<MessageRecord[]> {
+  if (!roomId) return [];
   const db = await getDb();
   const rows = await db.getAll("messages");
   return rows
-    .filter((r) => r.status === "pending" || (r.deletePending && r.serverId))
+    .filter((r) => r.roomId === roomId && (r.status === "pending" || (r.deletePending && r.serverId)))
     .sort(compareMessages);
 }
 
