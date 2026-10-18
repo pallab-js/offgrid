@@ -22,7 +22,7 @@ const dev = process.env.NODE_ENV !== "production";
 async function main(): Promise<void> {
   const app = next({
     dev,
-    hostname: config.hostname,
+    hostname: config.bindHost,
     port: config.port,
     dir: process.cwd(),
   });
@@ -74,10 +74,22 @@ async function main(): Promise<void> {
     server = createHttpServer(onRequest);
   }
 
-  server.listen(config.port, config.hostname, () => {
+  // A bad BIND_HOST otherwise dies with a raw ENOTFOUND/EADDRNOTAVAIL stack.
+  server.on("error", (error: NodeJS.ErrnoException) => {
+    const hint =
+      error.code === "EADDRINUSE"
+        ? `port ${config.port} is already in use`
+        : error.code === "ENOTFOUND" || error.code === "EADDRNOTAVAIL"
+          ? `BIND_HOST=${config.bindHost} is not a local address`
+          : "unexpected server error";
+    log("error", "hub.listen_failed", { code: error.code ?? "", hint, error: String(error) });
+    process.exit(1);
+  });
+
+  server.listen(config.port, config.bindHost, () => {
     log("info", "hub.listening", {
       port: config.port,
-      host: config.hostname,
+      host: config.bindHost,
       mode: dev ? "dev" : "prod",
       tls: config.enableTls,
     });

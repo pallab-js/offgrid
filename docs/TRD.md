@@ -29,7 +29,7 @@
 | Env var | Default | Meaning |
 |---|---|---|
 | `PORT` | `3000` | hub listen port |
-| `HOSTNAME` | `0.0.0.0` | bind address (all interfaces for LAN) |
+| `HOSTNAME` → `BIND_HOST` | `0.0.0.0` | bind address (all interfaces for LAN). Renamed from `HOSTNAME`: shells and container runtimes export `HOSTNAME` as a machine/container id, not an address (startup used to die with ENOTFOUND); the hub now reads `BIND_HOST` only. |
 | `DATA_DIR` | `./data` | SQLite + file store + logs |
 | `MAX_FILE_BYTES` | `536870912` (512 MB) | upload cap |
 | `MAX_FRAME_BYTES` | `1048576` (1 MB) | ws frame cap |
