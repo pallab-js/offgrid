@@ -71,6 +71,77 @@ describe("c2s frames", () => {
   });
 });
 
+describe("LWW timestamp bounds", () => {
+  const cipher = { ct: "x", iv: "y" };
+  const farFuture = () => Date.now() + 2 * 60 * 60_000; // > 1h skew cap
+
+  it("rejects client LWW timestamps too far in the future", () => {
+    expect(
+      c2sSchema.safeParse({
+        t: "note.save",
+        clientId: "c1",
+        id: "n1",
+        title: cipher,
+        body: cipher,
+        updatedAt: farFuture(),
+      }).success,
+    ).toBe(false);
+    expect(
+      c2sSchema.safeParse({ t: "msg.read", channelId: "ch1", at: farFuture() }).success,
+    ).toBe(false);
+    expect(
+      c2sSchema.safeParse({
+        t: "sos.raise",
+        clientId: "c1",
+        updatedAt: farFuture(),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts near-future (clock skew) and arbitrarily old client timestamps", () => {
+    const now = Date.now();
+    expect(
+      c2sSchema.safeParse({
+        t: "note.save",
+        clientId: "c1",
+        id: "n1",
+        title: cipher,
+        body: cipher,
+        updatedAt: now + 60_000,
+      }).success,
+    ).toBe(true);
+    // Offline replay: a device off-grid for a month sends its day-old edits.
+    expect(
+      c2sSchema.safeParse({
+        t: "note.save",
+        clientId: "c1",
+        id: "n1",
+        title: cipher,
+        body: cipher,
+        updatedAt: now - 30 * 24 * 60 * 60_000,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("keeps s2c unbounded: a slow client clock must not reject server frames", () => {
+    expect(
+      s2cSchema.safeParse({
+        t: "note.upsert",
+        rev: 4,
+        note: {
+          id: "n1",
+          title: cipher,
+          body: cipher,
+          updatedAt: farFuture(), // server-stamped, authoritative
+          updatedBy: "d1",
+          deletedAt: null,
+          rev: 4,
+        },
+      }).success,
+    ).toBe(true);
+  });
+});
+
 describe("s2c frames", () => {
   it("accepts joined, presence and sync.batch", () => {
     expect(

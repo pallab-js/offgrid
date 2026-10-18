@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ERROR_CODES } from "./constants";
+import { ERROR_CODES, MAX_FUTURE_SKEW_MS } from "./constants";
 
 /* ------------------------------------------------------------------ atoms */
 
@@ -11,6 +11,19 @@ export type Cipher = z.infer<typeof cipherSchema>;
 
 const idSchema = z.string().min(1).max(64);
 const epochMs = z.number().int().nonnegative();
+/**
+ * Client-supplied LWW timestamps (updatedAt / read `at`). The past is
+ * unbounded — offline devices legitimately replay days-old edits — but the
+ * future is capped at MAX_FUTURE_SKEW_MS ahead of the *server* clock at
+ * parse time: an item stamped far ahead wins every LWW comparison forever,
+ * permanently locking it for the whole room. Used only in c2sSchema; s2c
+ * keeps plain `epochMs` because server-stamped values are authoritative and
+ * a slow client clock must not reject valid server frames.
+ */
+const c2sEpochMs = epochMs.refine(
+  (t) => t <= Date.now() + MAX_FUTURE_SKEW_MS,
+  "timestamp too far in the future",
+);
 const colorSchema = z.string().min(1).max(32);
 
 export const deviceSchema = z.object({
@@ -216,7 +229,7 @@ export const c2sSchema = z.discriminatedUnion("t", [
   }),
   z.object({ t: z.literal("msg.del"), clientId: idSchema, id: idSchema }),
   z.object({ t: z.literal("msg.react"), clientId: idSchema, id: idSchema, emoji: z.string().min(1).max(16), on: z.boolean() }),
-  z.object({ t: z.literal("msg.read"), channelId: idSchema, at: epochMs }),
+  z.object({ t: z.literal("msg.read"), channelId: idSchema, at: c2sEpochMs }),
   z.object({ t: z.literal("typing"), channelId: idSchema, on: z.boolean() }),
   z.object({ t: z.literal("sync.pull"), cursor: z.number().int().nonnegative() }),
 
@@ -228,10 +241,10 @@ export const c2sSchema = z.discriminatedUnion("t", [
 
   z.object({ t: z.literal("channel.create"), clientId: idSchema, name: z.string().min(1).max(40) }),
 
-  z.object({ t: z.literal("note.save"), clientId: idSchema, id: idSchema.optional(), title: cipherSchema, body: cipherSchema, updatedAt: epochMs }),
-  z.object({ t: z.literal("note.del"), clientId: idSchema, id: idSchema, updatedAt: epochMs }),
+  z.object({ t: z.literal("note.save"), clientId: idSchema, id: idSchema.optional(), title: cipherSchema, body: cipherSchema, updatedAt: c2sEpochMs }),
+  z.object({ t: z.literal("note.del"), clientId: idSchema, id: idSchema, updatedAt: c2sEpochMs }),
 
-  z.object({ t: z.literal("check.set"), clientId: idSchema, itemId: idSchema, checked: z.boolean(), updatedAt: epochMs }),
+  z.object({ t: z.literal("check.set"), clientId: idSchema, itemId: idSchema, checked: z.boolean(), updatedAt: c2sEpochMs }),
 
   z.object({
     t: z.literal("wp.save"),
@@ -243,17 +256,17 @@ export const c2sSchema = z.discriminatedUnion("t", [
     gy: z.number().nullable().optional(),
     label: cipherSchema,
     color: colorSchema,
-    updatedAt: epochMs,
+    updatedAt: c2sEpochMs,
   }),
-  z.object({ t: z.literal("wp.del"), clientId: idSchema, id: idSchema, updatedAt: epochMs }),
+  z.object({ t: z.literal("wp.del"), clientId: idSchema, id: idSchema, updatedAt: c2sEpochMs }),
 
-  z.object({ t: z.literal("sos.raise"), clientId: idSchema, lat: z.number().nullable().optional(), lng: z.number().nullable().optional(), note: cipherSchema.nullable().optional(), updatedAt: epochMs }),
-  z.object({ t: z.literal("sos.clear"), clientId: idSchema, id: idSchema, updatedAt: epochMs }),
+  z.object({ t: z.literal("sos.raise"), clientId: idSchema, lat: z.number().nullable().optional(), lng: z.number().nullable().optional(), note: cipherSchema.nullable().optional(), updatedAt: c2sEpochMs }),
+  z.object({ t: z.literal("sos.clear"), clientId: idSchema, id: idSchema, updatedAt: c2sEpochMs }),
 
   z.object({ t: z.literal("beacon.share"), clientId: idSchema, text: cipherSchema, wpm: z.number().int().min(1).max(60) }),
 
   z.object({ t: z.literal("file.announce"), clientId: idSchema, fileId: idSchema }),
-  z.object({ t: z.literal("file.del"), clientId: idSchema, fileId: idSchema, updatedAt: epochMs }),
+  z.object({ t: z.literal("file.del"), clientId: idSchema, fileId: idSchema, updatedAt: c2sEpochMs }),
 ]);
 export type ClientFrame = z.infer<typeof c2sSchema>;
 

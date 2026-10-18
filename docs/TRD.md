@@ -262,6 +262,7 @@ UI writes to IDB first, then the outbox/socket; server ack confirms and stamps `
 7. Room-scoped authorization: every query filters by `room_id` derived from the verified token, never from client payload.
 8. Abuse surfaces are budgeted: join guesses 10/min per IP+room, room creation 10/min per IP, WS frames 60/s per connection and 480/s per IP, ≤ 32 sockets per IP — and the WS upgrade rejects foreign `Origin` headers.
 9. Device identity is server-issued: the WS `join` derives `conn.device.id` from the **token row**, never from the frame (a differing frame id is ignored and logged as `ws.join.device_mismatch`) — all ownership checks (`msg.del`, file delete, authorship, presence) therefore read a token-bound identity. Residual trust is the PSK model itself: anyone who knows the passphrase proof can mint a token for any device id at HTTP join.
+10. LWW inputs are time-bounded: client-supplied timestamps (`updatedAt` on note/wp/check/sos/file frames, `msg.read.at`) must be ≤ 1 h ahead of the server clock at parse time (`MAX_FUTURE_SKEW_MS`) or the frame is rejected `BAD_FRAME`. The past is unbounded (offline replay of days-old edits is legitimate); the future is capped because an item stamped far ahead wins every LWW comparison **forever**, locking it room-wide. s2c schemas stay unbounded — server-stamped values are authoritative and a slow client clock must not reject valid server frames.
 
 ## 10. Acceptance criteria per requirement area
 

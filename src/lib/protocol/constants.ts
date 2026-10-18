@@ -41,6 +41,17 @@ export function fileCipherSize(plainSize: number): number {
   return plainSize + frames * FILE_FRAME_OVERHEAD;
 }
 
+/**
+ * How far a client-supplied LWW timestamp may sit in the future of the
+ * server clock before the frame is rejected (BAD_FRAME). Past timestamps
+ * are unbounded — an offline device legitimately replays edits made days
+ * ago. Future ones are capped because an item stamped far ahead wins every
+ * LWW comparison forever, locking that note/waypoint/check/SOS for the
+ * whole room. 1 hour tolerates badly set field-device clocks; it bounds a
+ * successful poison to 1 hour instead of permanent.
+ */
+export const MAX_FUTURE_SKEW_MS = 60 * 60_000;
+
 export const ERROR_CODES = [
   "BAD_FRAME",
   "BAD_TOKEN",
