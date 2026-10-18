@@ -177,11 +177,12 @@ function dispatch(conn: Conn, frame: ClientFrame): void {
 
     case "msg.del": {
       const room = requireRoom(conn);
-      const result = repo.softDeleteMessage(room, frame.id);
+      // Authorization runs inside the repo transaction, before the mutation
+      // commits: the old check-after-commit persisted unauthorized deletes
+      // (rev bumped, visible on the next sync pull) while the sender only
+      // saw an error frame. System messages are rejected outright.
+      const result = repo.softDeleteMessage(room, frame.id, conn.device!.id);
       if (!result) throw new repo.RepoError("BAD_FRAME", "message not found");
-      if (result.msg.deviceId !== conn.device!.id && result.msg.kind !== "system") {
-        throw new repo.RepoError("BAD_FRAME", "not your message");
-      }
       ack(conn, frame.clientId, result.msg.id, result.rev);
       if (result.changed) emit(room, { t: "msg.new", msg: result.msg, rev: result.rev });
       return;

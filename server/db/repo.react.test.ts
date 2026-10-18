@@ -60,7 +60,7 @@ describe("reactions (server)", () => {
 
   it("leaves deleted messages untouched", () => {
     const id = seedMessage();
-    softDeleteMessage("r-react", id);
+    softDeleteMessage("r-react", id, "dev-a");
     const result = setReaction("r-react", id, "❤️", "dev-a", true);
     expect(result?.changed).toBe(false);
     expect(result?.msg.reactions).toEqual([]);

@@ -344,9 +344,24 @@ export function insertMessage(input: {
   })();
 }
 
+/**
+ * Soft-delete with authorization enforced *inside* the transaction, before
+ * the mutation: a rejected delete must not bump `deleted_at`/`rev`
+ * (a check-after-commit persisted unauthorized deletes and exposed them on
+ * the next sync pull even though the sender saw an error).
+ *
+ * - system messages are server-generated join notices — clients can never
+ *   delete them;
+ * - otherwise only the message's authoring device may delete.
+ *
+ * Returns `null` when no such message exists; throws {@link RepoError}
+ * (BAD_FRAME) when the actor is not allowed; idempotent `{ changed: false }`
+ * when it is already deleted.
+ */
 export function softDeleteMessage(
   roomId: string,
   id: string,
+  actorDeviceId: string,
 ): { msg: ReturnType<typeof toMessage>; rev: number; changed: boolean } | null {
   const db = getDb();
   return db.transaction(() => {
@@ -354,6 +369,12 @@ export function softDeleteMessage(
       .prepare("SELECT * FROM messages WHERE id = ? AND room_id = ?")
       .get(id, roomId) as MessageRow | undefined;
     if (!row) return null;
+    if (row.kind === "system") {
+      throw new RepoError("BAD_FRAME", "system messages cannot be deleted");
+    }
+    if (row.device_id !== actorDeviceId) {
+      throw new RepoError("BAD_FRAME", "not your message");
+    }
     if (row.deleted_at !== null) return { msg: toMessage(row), rev: row.rev, changed: false };
     const rev = nextRev(db);
     db.prepare("UPDATE messages SET deleted_at = ?, rev = ? WHERE id = ?").run(
