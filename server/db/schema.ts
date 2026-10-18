@@ -34,7 +34,8 @@ const BASELINE_DDL = `
     salt TEXT NOT NULL,
     proof TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    settings TEXT NOT NULL DEFAULT '{}'
+    settings TEXT NOT NULL DEFAULT '{}',
+    key_history TEXT NOT NULL DEFAULT '[]'
   );
 
   CREATE TABLE IF NOT EXISTS tokens (
@@ -232,6 +233,19 @@ export const MIGRATIONS: Migration[] = [
       db.prepare("UPDATE tokens SET expires_at = ? WHERE expires_at IS NULL").run(
         Date.now() + config.tokenTtlMs,
       );
+    },
+  },
+  {
+    // Passphrase rotation (TRD §9.13): `key_history` accumulates one
+    // wrapped copy of the previous room key per rotation — AES-GCM(K_new,
+    // K_prev) — so holders of the new passphrase can still decrypt content
+    // written before the rotation. Rooms start with an empty list.
+    id: 4,
+    name: "rooms.key_history (passphrase rotation)",
+    up: (db) => {
+      if (!hasColumn(db, "rooms", "key_history")) {
+        db.exec("ALTER TABLE rooms ADD COLUMN key_history TEXT NOT NULL DEFAULT '[]'");
+      }
     },
   },
 ];

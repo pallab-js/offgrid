@@ -91,6 +91,9 @@ export async function handleApi(
         token,
         serverTime: Date.now(),
         moderators: repo.getModerators(roomId),
+        // Wrapped previous room keys (oldest first) — lets a fresh join with
+        // the current passphrase still decrypt pre-rotation content (§9.13).
+        keyHistory: repo.getRoomKeyHistory(roomId),
       });
     }
 
@@ -242,6 +245,51 @@ export async function handleApi(
       return sendJson(res, 200, { cleared: cleared.length });
     }
 
+    const roomRotate = /^\/api\/rooms\/([^/]+)\/rotate$/.exec(path);
+    if (method === "POST" && roomRotate) {
+      const roomId = decodeURIComponent(roomRotate[1]!);
+      // Rotation is authorized by knowledge of the CURRENT passphrase
+      // (oldProof, timing-safe-compared against the stored verifier) — the
+      // same trust level as joining, and strictly stronger than a token: a
+      // stolen token alone cannot rotate a room, only a passphrase holder
+      // (or an eavesdropper who captured a join frame — the documented
+      // cleartext-LAN limit) can. Guesses draw from the join budget.
+      if (!joinLimiter.allow(`${ip}|${roomId}`)) {
+        log("warn", "room.rotate.throttled", { room: roomId });
+        throw new HttpError(429, "RATE_LIMITED", "too many attempts, try again in a minute");
+      }
+      const input = rotateSchema.parse(await readJson(req));
+      const meta = repo.getRoomMeta(roomId);
+      if (!meta) throw new HttpError(404, "ROOM_NOT_FOUND", "unknown room");
+      if (!repo.verifyProof(roomId, input.oldProof)) {
+        throw new HttpError(403, "BAD_PROOF", "current passphrase proof does not match");
+      }
+      // Transaction: salt+proof swapped, wrapped previous key appended, and
+      // EVERY room token deleted — all devices must rejoin with the new
+      // passphrase.
+      const { rev, keyHistory } = repo.rotateRoom({
+        roomId,
+        salt: input.salt,
+        proof: input.proof,
+        prevKey: input.prevKey,
+      });
+      // Tell live members why they are being disconnected, then kill their
+      // sessions — the next join with an old token bounces to the join
+      // screen (client: BAD_TOKEN → endSession).
+      broadcast(roomId, { t: "room.rotated", salt: input.salt });
+      let closed = 0;
+      for (const conn of roomConns(roomId)) {
+        try {
+          conn.ws.close(4001, "passphrase rotated");
+          closed += 1;
+        } catch {
+          /* socket is already dying */
+        }
+      }
+      log("info", "room.rotate", { room: roomId, rev, connections: closed });
+      return sendJson(res, 200, { salt: input.salt, rev, keyHistory });
+    }
+
     const fileCollection = /^\/api\/rooms\/([^/]+)\/files$/.exec(path);
     if (method === "POST" && fileCollection) {
       const roomId = decodeURIComponent(fileCollection[1]!);
@@ -314,6 +362,24 @@ const joinSchema = z.object({
 const modsSchema = z.object({
   deviceId: idPart,
   on: z.boolean(),
+});
+
+/**
+ * Passphrase rotation: `oldProof` proves knowledge of the current
+ * passphrase (compared timing-safe against the stored verifier); `salt`/
+ * `proof` are the fresh pair; `prevKey` is the wrapped copy of the previous
+ * room key (AES-GCM under the new key) so history stays decryptable.
+ * The hub cannot verify `prevKey`'s contents (it never sees keys) — only a
+ * passphrase holder can produce the request at all.
+ */
+const rotateSchema = z.object({
+  oldProof: b64,
+  salt: b64,
+  proof: b64,
+  prevKey: z.object({
+    ct: z.string().min(1).max(512),
+    iv: z.string().min(1).max(64),
+  }),
 });
 
 /* --------------------------------------------------------------- helpers */

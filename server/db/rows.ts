@@ -18,6 +18,7 @@ export interface RoomRow {
   proof: string;
   created_at: number;
   settings: string;
+  key_history: string;
 }
 
 export interface ChannelRow {

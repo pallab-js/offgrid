@@ -10,7 +10,7 @@ import { Field, TextInput } from "@/components/ui/input";
 import { ColorBlock } from "@/components/ui/color-block";
 import { InvitePanel } from "@/components/invite/invite-panel";
 import { buildJoinUrl } from "@/lib/utils/invite";
-import { computeProof, deriveRoomKey, exportRoomKey } from "@/lib/crypto/room";
+import { computeProof, deriveRoomKey, exportRoomKey, unwrapKeyHistory } from "@/lib/crypto/room";
 import { randomB64 } from "@/lib/crypto/base64";
 import { ulid } from "@/lib/utils/id";
 import { IDENTITY_COLORS, onColor } from "@/lib/utils/color";
@@ -162,12 +162,16 @@ export function JoinFlow() {
     navigateToChat = true,
   ): Promise<void> {
     const profile = { name: name.trim(), color };
-    const { token, moderators } = await postRoomJoin(input.roomId, {
+    const { token, moderators, keyHistory } = await postRoomJoin(input.roomId, {
       deviceId: input.deviceId,
       name: profile.name,
       color: profile.color,
       proof: input.proof,
     });
+    // After a passphrase rotation the join response carries the wrapped
+    // previous room keys — unwrap them now so pre-rotation content stays
+    // readable (decryption fallback chain; sealing uses the new key only).
+    const prevRoomKeysB64 = await unwrapKeyHistory(input.key, keyHistory);
 
     // Switching rooms in-place: drop the previous room's in-memory state first
     // (loaded guards would otherwise keep its data and block re-hydration).
@@ -186,6 +190,7 @@ export function JoinFlow() {
       token,
       roomKeyB64: await exportRoomKey(input.key),
       moderators,
+      prevRoomKeysB64,
       cursor: 0,
     });
     if (navigateToChat) router.push("/chat");

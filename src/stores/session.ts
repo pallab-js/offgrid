@@ -16,6 +16,8 @@ interface SessionState {
   token: string | null;
   cursor: number;
   roomKeyB64: string | null;
+  /** Previous-generation room keys (newest first), unwrapped after a passphrase rotation — decryption fallback only; sealing always uses `roomKeyB64`. */
+  prevRoomKeysB64: string[];
   /** Devices with moderation powers in the current room (rooms.settings.moderators). */
   moderators: string[];
   hydrated: boolean;
@@ -29,6 +31,7 @@ interface SessionState {
     token: string;
     roomKeyB64: string;
     moderators?: string[];
+    prevRoomKeysB64?: string[];
     cursor?: number;
   }) => void;
   setModerators: (moderators: string[]) => void;
@@ -81,22 +84,25 @@ function writePersisted(state: Partial<PersistedSession> | null): void {
   }
 }
 
-function readRoomMeta(): { moderators: string[] } {
+function readRoomMeta(): { moderators: string[]; prevRoomKeysB64: string[] } {
   try {
     const raw = sessionStorage.getItem(ROOM_META_KEY);
-    if (!raw) return { moderators: [] };
-    const parsed = JSON.parse(raw) as { moderators?: unknown };
-    return { moderators: Array.isArray(parsed.moderators) ? parsed.moderators : [] };
+    if (!raw) return { moderators: [], prevRoomKeysB64: [] };
+    const parsed = JSON.parse(raw) as { moderators?: unknown; prevRoomKeysB64?: unknown };
+    return {
+      moderators: Array.isArray(parsed.moderators) ? parsed.moderators : [],
+      prevRoomKeysB64: Array.isArray(parsed.prevRoomKeysB64) ? parsed.prevRoomKeysB64 : [],
+    };
   } catch {
-    return { moderators: [] };
+    return { moderators: [], prevRoomKeysB64: [] };
   }
 }
 
-function writeRoomMeta(moderators: string[]): void {
+function writeRoomMeta(moderators: string[], prevRoomKeysB64: string[]): void {
   try {
-    sessionStorage.setItem(ROOM_META_KEY, JSON.stringify({ moderators }));
+    sessionStorage.setItem(ROOM_META_KEY, JSON.stringify({ moderators, prevRoomKeysB64 }));
   } catch {
-    /* ignore — moderators refresh on the next joined frame */
+    /* ignore — both refresh on the next join */
   }
 }
 
@@ -108,6 +114,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   token: null,
   cursor: 0,
   roomKeyB64: null,
+  prevRoomKeysB64: [],
   moderators: [],
   hydrated: false,
 
@@ -121,7 +128,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
     const saved = readPersisted();
     if (saved) {
-      const { moderators } = readRoomMeta();
+      const { moderators, prevRoomKeysB64 } = readRoomMeta();
       set({
         deviceId: saved.deviceId,
         profile: saved.profile ?? null,
@@ -130,6 +137,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         token: saved.token,
         cursor: saved.cursor ?? 0,
         roomKeyB64,
+        prevRoomKeysB64,
         moderators,
         hydrated: true,
       });
@@ -162,15 +170,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (saved) writePersisted({ ...saved, profile });
   },
 
-  enterRoom: ({ roomId, roomName, token, roomKeyB64, moderators = [], cursor = 0 }) => {
+  enterRoom: ({
+    roomId,
+    roomName,
+    token,
+    roomKeyB64,
+    moderators = [],
+    prevRoomKeysB64 = [],
+    cursor = 0,
+  }) => {
     const { deviceId, profile } = get();
-    set({ roomId, roomName, token, cursor, roomKeyB64, moderators });
+    set({ roomId, roomName, token, cursor, roomKeyB64, prevRoomKeysB64, moderators });
     try {
       sessionStorage.setItem(KEY_CACHE, roomKeyB64);
     } catch {
       /* ignore */
     }
-    writeRoomMeta(moderators);
+    writeRoomMeta(moderators, prevRoomKeysB64);
     if (deviceId && profile) {
       writePersisted({ deviceId, profile, roomId, roomName, token, cursor });
     }
@@ -179,7 +195,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setModerators: (moderators) => {
     if (!get().roomId) return; // room-less sessions have no moderation context
     set({ moderators });
-    writeRoomMeta(moderators);
+    writeRoomMeta(moderators, get().prevRoomKeysB64);
   },
 
   setCursor: (cursor) => {
@@ -207,6 +223,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       token: null,
       cursor: 0,
       roomKeyB64: null,
+      prevRoomKeysB64: [],
       moderators: [],
     });
   },
@@ -221,6 +238,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       token: null,
       cursor: 0,
       roomKeyB64: null,
+      prevRoomKeysB64: [],
       moderators: [],
       hydrated: true,
     });

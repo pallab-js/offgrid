@@ -8,7 +8,9 @@ import { useSessionStore } from "@/stores/session";
 import { useMeshStore } from "@/stores/mesh";
 import { resetRoomStores } from "@/stores/reset";
 import { revokeOwnToken, revokeDeviceToken } from "@/lib/session/token";
-import { clearJoinNotices, setRoomModerator } from "@/lib/session/api";
+import { clearJoinNotices, postRoomJoin, rotateRoom, setRoomModerator } from "@/lib/session/api";
+import { computeProof, deriveRoomKey, exportRoomKey, seal, unwrapKeyHistory } from "@/lib/crypto/room";
+import { randomB64 } from "@/lib/crypto/base64";
 import type { Peer } from "@/lib/protocol";
 import { IDENTITY_COLORS, onColor } from "@/lib/utils/color";
 import { buildJoinUrl } from "@/lib/utils/invite";
@@ -130,6 +132,8 @@ export function SettingsPage() {
       {hasRoom && roomId && deviceId && moderators.includes(deviceId) ? (
         <ModerationSection roomId={roomId} />
       ) : null}
+
+      {hasRoom && roomId ? <PassphraseSection roomId={roomId} /> : null}
 
       <section className="flex flex-col gap-4 rounded-xl border border-hairline bg-canvas p-5">
         <h2 className="text-card-title">Export</h2>
@@ -375,6 +379,147 @@ function ModerationSection({ roomId }: { roomId: string }) {
           system messages ever leave the room.
         </span>
       </div>
+    </section>
+  );
+}
+
+/**
+ * Passphrase rotation (TRD §9.13): swaps the room's salt+proof, wraps the
+ * previous room key under the new one so history stays readable, and revokes
+ * every token in the room — all other devices must rejoin with the new
+ * passphrase. Anyone holding the current passphrase may rotate; the hub
+ * authorizes with a proof of the *current* passphrase, not a token.
+ */
+function PassphraseSection({ roomId }: { roomId: string }) {
+  const [currentPass, setCurrentPass] = useState("");
+  const [newPass, setNewPass] = useState("");
+  const [confirmPass, setConfirmPass] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onRotate(event: React.FormEvent): Promise<void> {
+    event.preventDefault();
+    setError(null);
+    if (newPass.length < 8) return setError("New passphrase must be at least 8 characters.");
+    if (newPass !== confirmPass) return setError("New passphrases do not match.");
+
+    setBusy(true);
+    try {
+      const session = useSessionStore.getState();
+      const deviceId = session.deviceId;
+      const profile = session.profile;
+      if (!deviceId || !profile) throw new Error("No device identity on this session.");
+
+      // Current salt comes from the hub — the client never persists it.
+      const metaRes = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/meta`);
+      if (!metaRes.ok) throw new Error("Room not reachable — is the hub up?");
+      const meta = (await metaRes.json()) as { salt: string };
+
+      const oldKey = await deriveRoomKey(currentPass, meta.salt);
+      // Instant local feedback; the hub's timing-safe proof check is the
+      // authoritative gate and also covers a rotation that happened while
+      // this device was away (stale cached key).
+      if (session.roomKeyB64 && (await exportRoomKey(oldKey)) !== session.roomKeyB64) {
+        throw new Error("Current passphrase is wrong (the room may have been rotated).");
+      }
+      const oldProof = await computeProof(oldKey, roomId);
+
+      const newSalt = randomB64(16);
+      const newKey = await deriveRoomKey(newPass, newSalt);
+      const newProof = await computeProof(newKey, roomId);
+      // Wrap the previous key under the new one — the hub stores it blindly;
+      // only holders of the new passphrase can unwrap it.
+      const prevKey = await seal(newKey, await exportRoomKey(oldKey));
+
+      await rotateRoom(roomId, { oldProof, salt: newSalt, proof: newProof, prevKey });
+
+      // Rotation revoked every token (ours included) — rejoin immediately
+      // with the new proof; the socket restarts on the token change.
+      const { token, moderators, keyHistory } = await postRoomJoin(roomId, {
+        deviceId,
+        name: profile.name,
+        color: profile.color,
+        proof: newProof,
+      });
+      session.enterRoom({
+        roomId,
+        roomName: session.roomName ?? "",
+        token,
+        roomKeyB64: await exportRoomKey(newKey),
+        moderators,
+        prevRoomKeysB64: await unwrapKeyHistory(newKey, keyHistory),
+        cursor: session.cursor,
+      });
+
+      setCurrentPass("");
+      setNewPass("");
+      setConfirmPass("");
+      toast("Passphrase changed — every other device must rejoin with the new one");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change the passphrase.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="flex flex-col gap-4 rounded-xl border border-hairline bg-canvas p-5">
+      <h2 className="text-card-title">Passphrase</h2>
+      <p className="text-body-sm">
+        Rotating the passphrase closes the room to everyone who knows the old
+        one: all sessions are revoked and teammates must rejoin with the new
+        passphrase. Existing messages stay readable — the old room key is
+        re-wrapped under the new one — but anyone who already had the old
+        passphrase may have copied them.
+      </p>
+      <form onSubmit={(e) => void onRotate(e)} className="flex flex-col gap-3">
+        <label className="flex flex-col gap-1.5">
+          <span className="caption text-ink">Current passphrase</span>
+          <TextInput
+            type="password"
+            value={currentPass}
+            onChange={(e) => setCurrentPass(e.target.value)}
+            placeholder="Today's passphrase"
+            aria-label="Current passphrase"
+            autoComplete="off"
+            className="max-w-[320px]"
+          />
+        </label>
+        <label className="flex flex-col gap-1.5">
+          <span className="caption text-ink">New passphrase</span>
+          <TextInput
+            type="password"
+            value={newPass}
+            onChange={(e) => setNewPass(e.target.value)}
+            placeholder="At least 8 characters"
+            aria-label="New passphrase"
+            autoComplete="off"
+            className="max-w-[320px]"
+          />
+        </label>
+        <label className="flex flex-col gap-1.5">
+          <span className="caption text-ink">Confirm new passphrase</span>
+          <TextInput
+            type="password"
+            value={confirmPass}
+            onChange={(e) => setConfirmPass(e.target.value)}
+            placeholder="Repeat it"
+            aria-label="Confirm new passphrase"
+            autoComplete="off"
+            className="max-w-[320px]"
+          />
+        </label>
+        {error ? (
+          <p role="alert" className="text-body-sm text-accent-magenta">
+            {error}
+          </p>
+        ) : null}
+        <div>
+          <Button type="submit" variant="magenta" disabled={busy}>
+            {busy ? "Rotating…" : "Rotate passphrase"}
+          </Button>
+        </div>
+      </form>
     </section>
   );
 }

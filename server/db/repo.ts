@@ -5,6 +5,7 @@ import { randomToken, ulid } from "../../src/lib/utils/id";
 import type {
   Beacon,
   Channel,
+  Cipher,
   FileMeta,
   Message,
   MeshEvent,
@@ -270,6 +271,71 @@ export function revokeDeviceTokens(roomId: string, deviceId: string): number {
   return getDb()
     .prepare("DELETE FROM tokens WHERE room_id = ? AND device_id = ?")
     .run(roomId, deviceId).changes;
+}
+
+/* ------------------------------------------------------- passphrase rotation */
+
+/** Cap on the wrapped-key chain: rotations are rare; this bounds the join payload. */
+export const MAX_KEY_HISTORY = 32;
+
+function parseKeyHistory(raw: string | null | undefined): Cipher[] {
+  try {
+    const parsed: unknown = JSON.parse(raw || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (entry): entry is Cipher =>
+        !!entry &&
+        typeof entry === "object" &&
+        typeof (entry as Cipher).ct === "string" &&
+        typeof (entry as Cipher).iv === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** Wrapped previous room keys, oldest first — see TRD §9.13. */
+export function getRoomKeyHistory(roomId: string): Cipher[] {
+  const row = getRoom(roomId);
+  return row ? parseKeyHistory(row.key_history) : [];
+}
+
+/**
+ * Passphrase rotation: swaps the room's salt+proof for the new ones,
+ * appends the wrapped copy of the previous room key (`prevKey` =
+ * AES-GCM(K_new, K_prev), computed client-side — the hub cannot compute or
+ * verify it), and deletes **every token in the room**: all devices must
+ * rejoin with the new passphrase, which is the point of rotating after a
+ * compromise. Caller is responsible for having verified `oldProof` against
+ * the stored proof (timing-safe) before calling.
+ */
+export function rotateRoom(input: {
+  roomId: string;
+  salt: string;
+  proof: string;
+  prevKey: Cipher;
+}): { rev: number; keyHistory: Cipher[] } {
+  const db = getDb();
+  return db.transaction(() => {
+    const row = getRoom(input.roomId);
+    if (!row) throw new RepoError("ROOM_NOT_FOUND", "unknown room");
+    const history = parseKeyHistory(row.key_history);
+    if (history.length >= MAX_KEY_HISTORY) {
+      throw new RepoError("BAD_FRAME", "rotation history limit reached");
+    }
+    history.push({ ct: input.prevKey.ct, iv: input.prevKey.iv });
+    db.prepare("UPDATE rooms SET salt = ?, proof = ?, key_history = ? WHERE id = ?").run(
+      input.salt,
+      input.proof,
+      JSON.stringify(history),
+      input.roomId,
+    );
+    // Every pre-rotation credential dies with the old passphrase — including
+    // tokens held by whoever compromised it.
+    db.prepare("DELETE FROM tokens WHERE room_id = ?").run(input.roomId);
+    const rev = nextRev(db);
+    return { rev, keyHistory: history };
+  })();
 }
 
 /* ------------------------------------------------------------ channels */

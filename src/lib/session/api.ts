@@ -7,9 +7,16 @@ import { useSessionStore } from "@/stores/session";
  * `token.ts` (revocation) so each module has one job.
  */
 
+interface Sealed {
+  ct: string;
+  iv: string;
+}
+
 export interface JoinResponse {
   token: string;
   moderators: string[];
+  /** Wrapped previous room keys (oldest first) — see TRD §9.13. */
+  keyHistory: Sealed[];
 }
 
 /**
@@ -35,8 +42,16 @@ export async function postRoomJoin(
       | null;
     throw new Error(body?.error?.message ?? "Could not join the room.");
   }
-  const body = (await res.json()) as { token: string; moderators?: string[] };
-  return { token: body.token, moderators: Array.isArray(body.moderators) ? body.moderators : [] };
+  const body = (await res.json()) as {
+    token: string;
+    moderators?: string[];
+    keyHistory?: Sealed[];
+  };
+  return {
+    token: body.token,
+    moderators: Array.isArray(body.moderators) ? body.moderators : [],
+    keyHistory: Array.isArray(body.keyHistory) ? body.keyHistory : [],
+  };
 }
 
 /** Adds or removes one device from the room's moderator list (moderator-only). */
@@ -81,4 +96,30 @@ export async function clearJoinNotices(roomId: string): Promise<number> {
   }
   const body = (await res.json()) as { cleared?: number };
   return body.cleared ?? 0;
+}
+
+/**
+ * Rotates the room passphrase: swaps salt+proof, wraps the previous room
+ * key under the new one (`prevKey`), and revokes every token in the room.
+ * 403 means `oldProof` did not match the current passphrase — the room was
+ * left untouched.
+ */
+export async function rotateRoom(
+  roomId: string,
+  input: { oldProof: string; salt: string; proof: string; prevKey: Sealed },
+): Promise<void> {
+  const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/rotate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (res.status === 403) {
+    throw new Error("Current passphrase is wrong — the room was not changed.");
+  }
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as
+      | { error?: { message?: string } }
+      | null;
+    throw new Error(body?.error?.message ?? "Could not rotate the passphrase.");
+  }
 }

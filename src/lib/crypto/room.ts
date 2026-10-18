@@ -88,3 +88,34 @@ export async function open(key: CryptoKey, sealed: Sealed): Promise<string> {
   );
   return decoder.decode(plain);
 }
+
+/**
+ * Unwraps the room's key-history chain after a passphrase rotation
+ * (TRD §9.13). `wraps` is stored oldest-first, where `wraps[i]` is
+ * AES-GCM(K_{i+1}, K_i) — key K_{i+1} encrypted the previous key K_i.
+ * Starting from the newest wrap (encrypted under the current key), each
+ * unwrap yields the next older key, down to K_1.
+ *
+ * Returns the previous keys newest-first: `[K_{n-1}, ..., K_1]` — the
+ * exact order `openText` should try them in (most-recent-old first).
+ * A corrupt link stops the walk and returns what was recovered so far:
+ * partial history beats none, and the current key still works.
+ */
+export async function unwrapKeyHistory(
+  currentKey: CryptoKey,
+  wraps: Sealed[],
+): Promise<string[]> {
+  const keys: string[] = [];
+  let key = currentKey;
+  for (let i = wraps.length - 1; i >= 0; i--) {
+    try {
+      const b64 = await open(key, wraps[i]!);
+      const older = await importRoomKey(b64);
+      keys.push(b64);
+      key = older;
+    } catch {
+      break; // tampered/foreign wrap — keep what unwrapped cleanly
+    }
+  }
+  return keys;
+}

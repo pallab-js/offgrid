@@ -1,5 +1,5 @@
 import { FILE_CHUNK_BYTES, FILE_FRAME_OVERHEAD } from "@/lib/protocol/constants";
-import { getRoomKey } from "./keycache";
+import { getRoomKey, getRoomKeys } from "./keycache";
 
 const aadEncoder = new TextEncoder();
 
@@ -59,7 +59,19 @@ export async function decryptFileFrame(
   index: number,
   frame: Uint8Array<ArrayBuffer>,
 ): Promise<Uint8Array<ArrayBuffer>> {
-  return decryptFileFrameWith(await getRoomKey(), fileId, index, frame);
+  // Files uploaded before a passphrase rotation were sealed under an older
+  // room key — try the current key first, then previous-generation keys
+  // (newest first), same fallback order as openText.
+  const keys = await getRoomKeys();
+  let lastError: unknown;
+  for (const key of keys) {
+    try {
+      return await decryptFileFrameWith(key, fileId, index, frame);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("file frame decryption failed");
 }
 
 /** Frame boundaries for a plaintext payload. */

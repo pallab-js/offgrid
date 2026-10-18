@@ -198,4 +198,28 @@ describe("migration runner", () => {
     expect(version(db)).toBe(LATEST);
     db.close();
   });
+
+  it("adds rooms.key_history with an empty list for pre-rotation rooms", () => {
+    const db = openDb();
+    migrate(db, MIGRATIONS.filter((m) => m.id < 4));
+    // Baseline is latest-shape; drop the column to emulate a pre-rotation DB.
+    db.exec("ALTER TABLE rooms DROP COLUMN key_history");
+    db.prepare("INSERT INTO rooms (id, name, salt, proof, created_at) VALUES (?, ?, ?, ?, ?)").run(
+      "r-pre",
+      "Pre",
+      "c2FsdA==",
+      "cHJvb2Y=",
+      Date.now(),
+    );
+
+    migrate(db);
+
+    expect(hasColumn(db, "rooms", "key_history")).toBe(true);
+    const row = db.prepare("SELECT key_history FROM rooms WHERE id = 'r-pre'").get() as {
+      key_history: string;
+    };
+    expect(JSON.parse(row.key_history)).toEqual([]); // no rotations yet
+    expect(version(db)).toBe(LATEST);
+    db.close();
+  });
 });
