@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -11,7 +12,7 @@ concurrency:
 
 jobs:
   checks:
-    name: typecheck, lint, test
+    name: typecheck, lint, test, build, live-verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +22,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 22 is the floor for the live-verify scripts (global WebSocket).
+          node-version: 22
           cache: pnpm
 
       - name: Install
@@ -35,3 +37,37 @@ jobs:
 
       - name: Unit tests
         run: pnpm test
+
+      - name: Production build
+        run: pnpm build
+
+      # End-to-end gate: boot the real hub (prod build, ephemeral data dir)
+      # and drive it with the same verify scripts used before each release.
+      - name: Boot hub
+        run: |
+          DATA_DIR=/tmp/offgrid-ci NODE_ENV=production PORT=3000 \
+            nohup pnpm exec tsx server/index.ts > hub.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/api/health > /dev/null; then
+              echo "hub healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::hub did not become healthy within 30s"
+          exit 1
+
+      - name: Live verification (revocation, moderation, rotation)
+        env:
+          HUB: http://localhost:3000
+          # verify-revoke.ts force-expires a token by editing the hub's
+          # SQLite file directly, so it must point at the same data dir.
+          DATA_DIR: /tmp/offgrid-ci
+        run: |
+          pnpm exec tsx scripts/verify-revoke.ts
+          pnpm exec tsx scripts/verify-moderation.ts
+          pnpm exec tsx scripts/verify-rotate.ts
+
+      - name: Hub log
+        if: failure()
+        run: cat hub.log || true

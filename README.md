@@ -1,5 +1,7 @@
 # OffGrid — off-grid messaging & field tools
 
+[![CI](https://github.com/pallab-js/offgrid/actions/workflows/ci.yml/badge.svg)](https://github.com/pallab-js/offgrid/actions/workflows/ci.yml)
+
 Real-time messaging, file sharing and survival tooling for teams **beyond the reach of the internet**. One machine on the local network becomes the hub; everyone else joins from any browser. No cloud, no accounts, no external services.
 
 > Status: **v0.1.0-alpha.** Local-only alpha — run the hub yourself and join from the LAN. See [docs/IMPLEMENTATION-PLAN.md](docs/IMPLEMENTATION-PLAN.md) for the roadmap.
@@ -10,9 +12,9 @@ Field teams, expedition crews, disaster-response volunteers and remote household
 
 ## What it does (v1)
 
-- **Channels & messaging** — real-time channels with replies, typing indicators, soft deletes and an offline outbox that syncs on reconnect.
+- **Channels & messaging** — real-time channels with replies, typing indicators, soft deletes and an offline outbox that syncs on reconnect. The first device to join a room is its moderator: it can remove any member's message, clear join notices and revoke a lost device.
 - **File sharing** — streaming uploads to the hub with progress, resumable downloads (`Range`), in-browser previews, offline cache for small files.
-- **Encrypted rooms** — a shared passphrase protects room content at rest on the hub (AES-GCM, PBKDF2 proofs); the server never learns the passphrase.
+- **Encrypted rooms** — a shared passphrase protects room content at rest on the hub (AES-GCM, PBKDF2 proofs); the server never learns the passphrase. A compromised passphrase can be rotated room-wide without losing history.
 - **Survival suite** — SOS distress beacon, offline map + waypoints, bundled checklists/guides, morse/beacon signaling, shared notes, battery/signal status board.
 - **Local-first** — every device keeps its own IndexedDB mirror of history, so the app stays readable (and queues writes) when the hub is down.
 
@@ -65,6 +67,15 @@ Every environment variable (port, bind address, storage, TLS, logging) is docume
 | `pnpm test` | vitest unit suite |
 | `pnpm exec tsx scripts/smoke-p1.ts` | end-to-end smoke against a running hub |
 | `pnpm exec tsx scripts/n5-rate-limit.ts` | N5 acceptance: rate-limit flood + bystander check |
+| `pnpm exec tsx scripts/verify-revoke.ts` | live token expiry/revocation checks (kills live WS sessions) |
+| `pnpm exec tsx scripts/verify-moderation.ts` | live moderation-flow checks (mods, notice clearing, targeted revoke) |
+| `pnpm exec tsx scripts/verify-rotate.ts` | live passphrase-rotation checks (rekey, key-history unwrapping) |
+
+The live scripts (`smoke-*`, `n5-*`, `verify-*`) need a running hub — `pnpm dev` in another terminal — and default to `http://localhost:3000`; point them elsewhere with `HUB=http://host:port`. They use Node's global `WebSocket`, so run them on **Node ≥ 22**.
+
+### Continuous integration
+
+Every push to `main` and every pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml): install → typecheck → lint → unit tests → production build, then a **live end-to-end gate** — the built hub boots on an ephemeral data dir and `scripts/verify-revoke.ts`, `verify-moderation.ts` and `verify-rotate.ts` drive it over real HTTP + WebSocket. A red badge means the hub itself, not just the unit suite, is broken.
 
 ### Troubleshooting
 
@@ -72,7 +83,7 @@ Every environment variable (port, bind address, storage, TLS, logging) is docume
 |---|---|
 | `pnpm dev` fails with "port in use" | `PORT=3001 pnpm dev`, then join at `:3001`. |
 | Other devices cannot reach the hub | Allow Node through the OS firewall on port 3000; make sure every device is on the *same* network (many Wi-Fi networks isolate clients — disable "client isolation"/"AP isolation" in the router). |
-| "wrong passphrase" on join | Passphrases are case-sensitive and must match the room exactly. There is no recovery — create a new room if it is lost. |
+| "wrong passphrase" on join | Passphrases are case-sensitive and must match the room exactly — including after a moderator rotated it (Settings → Passphrase; rejoin with the new one). There is no recovery — create a new room if it is lost. |
 | A device never appears in presence | It joined a *different* room, or the tab is asleep — reload it. Check the hub terminal for `ws` errors. |
 | Changes stay "pending" after reconnect | The header shows the offline banner with a **Retry now** button; open it. If frames show as failed, the hub rejected them — check its log. |
 | App looks stale after an update | The service worker caches the shell (production only): hard-reload once, or close all tabs and reopen. |

@@ -19,7 +19,7 @@ function check(name: string, ok: boolean, detail = ""): void {
 
 function wsJoin(token: string): Promise<{ ws: WebSocket; joined: boolean }> {
   return new Promise((resolve) => {
-    const ws = new WebSocket("ws://localhost:3000/ws");
+    const ws = new WebSocket(BASE.replace("http", "ws") + "/ws");
     let done = false;
     const finish = (joined: boolean) => {
       if (!done) {

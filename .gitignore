@@ -43,3 +43,19 @@ next-env.d.ts
 
 # offgrid local data (hub database, files, logs)
 /data/
+# …same artifacts if DATA_DIR is ever pointed at the repo root
+/mesh.db
+/mesh.db-shm
+/mesh.db-wal
+/files/
+/logs/
+
+# stray runtime output (hub writes its own under <DATA_DIR>/logs)
+*.log
+nohup.out
+
+# editors & local agent tooling
+.vscode/
+.idea/
+.claude/
+.opencode/
