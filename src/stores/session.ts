@@ -6,6 +6,8 @@ import { ulid } from "@/lib/utils/id";
 export interface Profile {
   name: string;
   color: string;
+  /** Manual battery percentage (0-100) for devices without Battery API. */
+  manualBattery?: number | null;
 }
 
 interface SessionState {
@@ -25,6 +27,7 @@ interface SessionState {
   hydrate: () => void;
   ensureDevice: (name: string, color: string) => string;
   setProfile: (profile: Profile) => void;
+  setManualBattery: (battery: number | null) => void;
   enterRoom: (input: {
     roomId: string;
     roomName: string;
@@ -168,6 +171,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ profile });
     const saved = readPersisted();
     if (saved) writePersisted({ ...saved, profile });
+  },
+
+  setManualBattery: (battery: number | null) => {
+    set((state) => ({ profile: state.profile ? { ...state.profile, manualBattery: battery } : null }));
+    const saved = readPersisted();
+    if (saved?.profile) writePersisted({ ...saved, profile: { ...saved.profile, manualBattery: battery } });
   },
 
   enterRoom: ({

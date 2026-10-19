@@ -239,7 +239,17 @@
   }
 }
 
-.animate-sos-strobe {
+@keyframes offgrid-stripe {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 16px 0;
+  }
+}
+
+/* Strobe is opt-in: only applies when body has data-sos-strobe="true" */
+body[data-sos-strobe="true"] .animate-sos-strobe {
   animation: offgrid-sos-strobe 0.5s steps(1, end) infinite;
 }
 
@@ -250,6 +260,16 @@
   .animate-spin {
     animation: none;
   }
+  body[data-sos-strobe="true"] .animate-sos-strobe {
+    animation: none;
+  }
+  .animate-stripe {
+    animation: none;
+  }
+}
+
+.animate-stripe {
+  animation: offgrid-stripe 1s linear infinite;
 }
 
 /* --- Map dark navy theme --------------------------------------------------

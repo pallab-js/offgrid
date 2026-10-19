@@ -4,11 +4,26 @@ import type { MeshEvent } from "./frames";
 
 export const WS_PATH = "/ws";
 
-/** Client heartbeat interval (TRD §4.4). */
-export const HEARTBEAT_MS = 15_000;
+/** Current protocol version. Increment on breaking frame changes. */
+export const PROTOCOL_VERSION = 1;
 
-/** Hub marks a peer offline after this long with no frames. */
+/** Client heartbeat interval (TRD §4.4). Base interval, adapts based on RTT. */
+export const HEARTBEAT_MS = 15_000;
+/** Minimum heartbeat interval (fast retry on flaky connection). */
+export const HEARTBEAT_MIN_MS = 5_000;
+/** Maximum heartbeat interval (stable connection). */
+export const HEARTBEAT_MAX_MS = 60_000;
+/** RTT threshold for considering connection "stable" (ms). */
+export const HEARTBEAT_STABLE_RTT_MS = 50;
+/** Consecutive successful pongs before backing off heartbeat. */
+export const HEARTBEAT_STABLE_COUNT = 5;
+
+/** Hub marks a peer offline after this long with no frames. Base timeout, adapts per-peer RTT. */
 export const OFFLINE_MS = 45_000;
+/** Minimum offline timeout (ms). */
+export const OFFLINE_MIN_MS = 15_000;
+/** Maximum offline timeout (ms). */
+export const OFFLINE_MAX_MS = 120_000;
 
 /** Max inbound/outbound ws frame size. */
 export const MAX_FRAME_BYTES = 1_048_576;
@@ -47,10 +62,17 @@ export function fileCipherSize(plainSize: number): number {
  * are unbounded — an offline device legitimately replays edits made days
  * ago. Future ones are capped because an item stamped far ahead wins every
  * LWW comparison forever, locking that note/waypoint/check/SOS for the
- * whole room. 1 hour tolerates badly set field-device clocks; it bounds a
- * successful poison to 1 hour instead of permanent.
+ * whole room. 5 minutes tolerates modest clock skew; it bounds a
+ * successful poison to 5 minutes instead of permanent.
  */
-export const MAX_FUTURE_SKEW_MS = 60 * 60_000;
+export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
+
+/** IndexedDB compaction: delete synced messages older than this (ms). */
+export const MESSAGE_HISTORY_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+/** IndexedDB compaction: delete file blobs larger than this (bytes). */
+export const FILE_BLOB_MAX_BYTES = 32 * 1024 * 1024; // 32 MB
+/** IndexedDB compaction: run when storage estimate exceeds this fraction. */
+export const STORAGE_QUOTA_THRESHOLD = 0.8;
 
 export const ERROR_CODES = [
   "BAD_FRAME",

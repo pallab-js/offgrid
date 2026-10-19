@@ -1,6 +1,14 @@
 "use client";
 
-import { HEARTBEAT_MS, REQUEST_TIMEOUT_MS, WS_PATH } from "@/lib/protocol/constants";
+import {
+  HEARTBEAT_MS,
+  HEARTBEAT_MIN_MS,
+  HEARTBEAT_MAX_MS,
+  HEARTBEAT_STABLE_RTT_MS,
+  HEARTBEAT_STABLE_COUNT,
+  REQUEST_TIMEOUT_MS,
+  WS_PATH,
+} from "@/lib/protocol/constants";
 import type { ClientFrame, Device, ErrorCode, ServerFrame } from "@/lib/protocol";
 
 let frameSchemas: Promise<typeof import("@/lib/protocol/frames")> | null = null;
@@ -37,7 +45,7 @@ interface SocketConfig {
 }
 
 /**
- * Reconnecting ws client: join on open, heartbeat for RTT + liveness,
+ * Reconnecting ws client: join on open, adaptive heartbeat for RTT + liveness,
  * request/ack correlation for outbox settling (TRD §4).
  */
 class MeshSocket {
@@ -47,8 +55,10 @@ class MeshSocket {
   private joined = false;
   private attempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   private rttEma: number | null = null;
+  private consecutivePongs = 0;
+  private currentHeartbeatMs = HEARTBEAT_MS;
   private pending = new Map<
     string,
     { resolve: (ack: Ack) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
@@ -62,6 +72,8 @@ class MeshSocket {
     if (this.running) this.stop(false);
     this.running = true;
     this.attempt = 0;
+    this.consecutivePongs = 0;
+    this.currentHeartbeatMs = HEARTBEAT_MS;
     this.open();
   }
 
@@ -134,7 +146,9 @@ class MeshSocket {
     ws.onopen = () => {
       if (!this.config) return;
       this.attempt = 0;
-      this.send({ t: "join", token: this.config.token, device: this.config.device });
+      this.consecutivePongs = 0;
+      this.currentHeartbeatMs = HEARTBEAT_MS;
+      this.send({ t: "join", token: this.config.token, device: this.config.device, v: 1 });
     };
     // Frames from a socket that has already been replaced (stop/start race on
     // rapid session changes) must not leak into the new session — a stale
@@ -197,6 +211,8 @@ class MeshSocket {
       const sample = Date.now() - frame.ts;
       this.rttEma =
         this.rttEma === null ? sample : Math.round(this.rttEma * 0.7 + sample * 0.3);
+      this.consecutivePongs += 1;
+      this.adaptHeartbeat();
       this.rttHandlers.forEach((handler) => handler(this.rttEma!));
     } else if (frame.t === "ack") {
       const entry = this.pending.get(frame.ref);
@@ -229,16 +245,40 @@ class MeshSocket {
     }
   }
 
+  private adaptHeartbeat(): void {
+    if (this.rttEma === null) return;
+    if (this.rttEma <= HEARTBEAT_STABLE_RTT_MS && this.consecutivePongs >= HEARTBEAT_STABLE_COUNT) {
+      // Stable connection: back off to max interval
+      const next = Math.min(this.currentHeartbeatMs * 2, HEARTBEAT_MAX_MS);
+      if (next !== this.currentHeartbeatMs) {
+        this.currentHeartbeatMs = next;
+        this.restartHeartbeat();
+      }
+    } else if (this.rttEma > HEARTBEAT_STABLE_RTT_MS) {
+      // Unstable: fast heartbeat
+      if (this.currentHeartbeatMs !== HEARTBEAT_MIN_MS) {
+        this.currentHeartbeatMs = HEARTBEAT_MIN_MS;
+        this.restartHeartbeat();
+      }
+      this.consecutivePongs = 0; // Reset stable count
+    }
+  }
+
+  private restartHeartbeat(): void {
+    this.stopHeartbeat();
+    this.startHeartbeat();
+  }
+
   private startHeartbeat(): void {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
       this.send({ t: "ping", ts: Date.now() });
-    }, HEARTBEAT_MS);
+    }, this.currentHeartbeatMs);
     this.send({ t: "ping", ts: Date.now() });
   }
 
   private stopHeartbeat(): void {
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer);
     this.heartbeatTimer = null;
   }
 

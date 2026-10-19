@@ -31,14 +31,33 @@ function ensureStream(): fs.WriteStream | null {
 /**
  * Local structured log. Never logs secrets: no passphrases, keys, tokens
  * or plaintext message bodies (TRD §8).
+ * Outputs JSON lines with timestamp, level, event, and fields.
  */
 export function log(level: Level, event: string, fields: Record<string, unknown> = {}): void {
   if (ORDER[level] < ORDER[config.logLevel]) return;
-  const parts = Object.entries(fields)
-    .map(([k, v]) => `${k}=${String(v)}`)
-    .join(" ");
-  const line = `${new Date().toISOString()} ${level.toUpperCase()} ${event}${parts ? " " + parts : ""}`;
+
+  const timestamp = new Date().toISOString();
+  const entry = {
+    timestamp,
+    level,
+    event,
+    ...fields,
+  };
+
+  const line = JSON.stringify(entry);
+
   if (level === "error") console.error(line);
   else console.log(line);
+
   ensureStream()?.write(line + "\n");
+}
+
+/** Creates a child logger with additional fixed fields. */
+export function childLogger(baseFields: Record<string, unknown>) {
+  return {
+    debug: (event: string, fields: Record<string, unknown> = {}) => log("debug", event, { ...baseFields, ...fields }),
+    info: (event: string, fields: Record<string, unknown> = {}) => log("info", event, { ...baseFields, ...fields }),
+    warn: (event: string, fields: Record<string, unknown> = {}) => log("warn", event, { ...baseFields, ...fields }),
+    error: (event: string, fields: Record<string, unknown> = {}) => log("error", event, { ...baseFields, ...fields }),
+  };
 }

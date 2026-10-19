@@ -215,9 +215,16 @@ export function FilesPage() {
                   <div
                     className={cn(
                       "h-full transition-[width]",
-                      task.status === "failed" ? "bg-accent-magenta" : "bg-primary",
+                      task.status === "failed"
+                        ? "bg-accent-magenta bg-[repeating-linear-gradient(45deg,_transparent,_transparent_4px,_currentColor_4px,_currentColor_8px)] animate-[stripe_1s_linear_infinite]"
+                        : "bg-primary",
                     )}
                     style={{ width: `${task.status === "failed" ? 100 : pct}%` }}
+                    role="progressbar"
+                    aria-valuenow={task.status === "failed" ? 100 : pct}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-label={task.status === "failed" ? "Upload failed" : `Upload progress ${pct}%`}
                   />
                 </div>
               </li>

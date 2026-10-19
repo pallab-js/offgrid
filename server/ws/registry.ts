@@ -1,4 +1,5 @@
 import type { WebSocket } from "ws";
+import { OFFLINE_MIN_MS, OFFLINE_MAX_MS } from "../../src/lib/protocol";
 
 export interface ConnDevice {
   id: string;
@@ -24,6 +25,14 @@ export interface Conn {
   /** sha256 of the bearer token used to join — lets revocation find the
    * live sessions riding a revoked token. Null until joined. */
   tokenHash: string | null;
+}
+
+/** Computes adaptive offline timeout for a connection based on its RTT. */
+export function getOfflineTimeout(conn: Conn): number {
+  if (conn.rttMs === null) return OFFLINE_MAX_MS;
+  // Timeout = 3 * RTT with min/max bounds
+  const timeout = Math.max(OFFLINE_MIN_MS, Math.min(OFFLINE_MAX_MS, conn.rttMs * 3));
+  return timeout;
 }
 
 const byRoom = new Map<string, Set<Conn>>();

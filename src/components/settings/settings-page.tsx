@@ -3,7 +3,7 @@
 import { useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Download, LogOut, Shield, Trash2, UserMinus } from "lucide-react";
+import { Download, Eye, EyeOff, LogOut, Shield, Trash2, UserMinus, AlertTriangle } from "lucide-react";
 import { useSessionStore } from "@/stores/session";
 import { useMeshStore } from "@/stores/mesh";
 import { resetRoomStores } from "@/stores/reset";
@@ -15,6 +15,7 @@ import type { Peer } from "@/lib/protocol";
 import { IDENTITY_COLORS, onColor } from "@/lib/utils/color";
 import { buildJoinUrl } from "@/lib/utils/invite";
 import { downloadExport, wipeLocalData } from "@/lib/data/export";
+import { manualCompaction } from "@/lib/sync/compaction";
 import { toast } from "@/stores/toast";
 import { Eyebrow } from "@/components/ui/eyebrow";
 import { Button } from "@/components/ui/button";
@@ -47,6 +48,7 @@ export function SettingsPage() {
   const [wipeText, setWipeText] = useState("");
   const [wiping, setWiping] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  const [freeingSpace, setFreeingSpace] = useState(false);
 
   async function onExport(): Promise<void> {
     setExporting(true);
@@ -57,6 +59,18 @@ export function SettingsPage() {
       toast("Export failed — could not read local data", "error");
     } finally {
       setExporting(false);
+    }
+  }
+
+  async function onFreeSpace(): Promise<void> {
+    setFreeingSpace(true);
+    try {
+      const { messagesDeleted, fileBlobsCleared } = await manualCompaction();
+      toast(`Freed space: ${messagesDeleted} old messages removed, ${fileBlobsCleared} large file caches cleared`);
+    } catch {
+      toast("Cleanup failed — try again", "error");
+    } finally {
+      setFreeingSpace(false);
     }
   }
 
@@ -151,6 +165,20 @@ export function SettingsPage() {
         </div>
       </section>
 
+      <section className="flex flex-col gap-4 rounded-xl border border-hairline bg-canvas p-5">
+        <h2 className="text-card-title">Storage</h2>
+        <p className="text-body-sm">
+          Clears message history older than 30 days and removes cached file blobs
+          larger than 32 MB. Recent messages and small files stay available offline.
+        </p>
+        <div>
+          <Button variant="secondary" onClick={() => void onFreeSpace()} disabled={freeingSpace}>
+            <Trash2 className="size-4" aria-hidden="true" />
+            {freeingSpace ? "Cleaning up…" : "Free up space"}
+          </Button>
+        </div>
+      </section>
+
       <section className="flex flex-col gap-4 rounded-xl border border-accent-magenta bg-canvas p-5">
         <h2 className="text-card-title">Danger zone</h2>
         <p className="text-body-sm">
@@ -189,15 +217,19 @@ function ProfileForm({
   initialColor: string;
 }) {
   const deviceId = useSessionStore((s) => s.deviceId);
+  const profile = useSessionStore((s) => s.profile);
   const setProfile = useSessionStore((s) => s.setProfile);
+  const setManualBattery = useSessionStore((s) => s.setManualBattery);
   const ensureDevice = useSessionStore((s) => s.ensureDevice);
   const [name, setName] = useState(initialName);
   const [color, setColor] = useState(initialColor);
+  const [manualBattery, setManualBatteryState] = useState(profile?.manualBattery ?? "");
 
   function saveProfile(): void {
     const trimmed = name.trim() || "Explorer";
-    if (deviceId) setProfile({ name: trimmed, color });
+    if (deviceId) setProfile({ name: trimmed, color, manualBattery: manualBattery === "" ? null : Number(manualBattery) });
     else ensureDevice(trimmed, color);
+    if (manualBattery !== "") setManualBattery(manualBattery === "" ? null : Number(manualBattery));
     toast("Profile saved");
   }
 
@@ -236,6 +268,20 @@ function ProfileForm({
           ))}
         </div>
       </fieldset>
+      <label className="flex flex-col gap-1.5">
+        <span className="caption text-ink">Manual battery % (for devices without Battery API)</span>
+        <TextInput
+          type="number"
+          min={0}
+          max={100}
+          value={manualBattery}
+          onChange={(e) => setManualBatteryState(e.target.value)}
+          placeholder="e.g. 85"
+          aria-label="Manual battery percentage"
+          className="max-w-[120px]"
+        />
+        <span className="caption text-ink">Leave empty to use device battery API (if available)</span>
+      </label>
       <div>
         <Button onClick={saveProfile}>Save profile</Button>
       </div>
@@ -383,6 +429,49 @@ function ModerationSection({ roomId }: { roomId: string }) {
   );
 }
 
+function PasswordField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  show,
+  onToggleShow,
+  autoComplete,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  show: boolean;
+  onToggleShow: () => void;
+  autoComplete: string;
+}) {
+  return (
+    <label className="flex flex-col gap-1.5">
+      <span className="caption text-ink">{label}</span>
+      <div className="relative">
+        <TextInput
+          type={show ? "text" : "password"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          aria-label={label}
+          autoComplete={autoComplete}
+          className="max-w-[320px] pr-12"
+        />
+        <button
+          type="button"
+          onClick={onToggleShow}
+          aria-label={show ? "Hide passphrase" : "Show passphrase"}
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-ink hover:text-ink/60"
+        >
+          {show ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+        </button>
+      </div>
+    </label>
+  );
+}
+
 /**
  * Passphrase rotation (TRD §9.13): swaps the room's salt+proof, wraps the
  * previous room key under the new one so history stays readable, and revokes
@@ -396,69 +485,109 @@ function PassphraseSection({ roomId }: { roomId: string }) {
   const [confirmPass, setConfirmPass] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [pendingRotation, setPendingRotation] = useState<{
+    oldProof: string;
+    newSalt: string;
+    newProof: string;
+    prevKey: { ct: string; iv: string };
+    newKey: CryptoKey;
+    deviceId: string;
+    profile: { name: string; color: string };
+  } | null>(null);
 
-  async function onRotate(event: React.FormEvent): Promise<void> {
+  async function prepareRotation(event: React.FormEvent): Promise<void> {
     event.preventDefault();
     setError(null);
     if (newPass.length < 8) return setError("New passphrase must be at least 8 characters.");
     if (newPass !== confirmPass) return setError("New passphrases do not match.");
 
+    const session = useSessionStore.getState();
+    const deviceId = session.deviceId;
+    const profile = session.profile;
+    if (!deviceId || !profile) return setError("No device identity on this session.");
+
+    // Current salt comes from the hub — the client never persists it.
+    const metaRes = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/meta`);
+    if (!metaRes.ok) return setError("Room not reachable — is the hub up?");
+    const meta = (await metaRes.json()) as { salt: string };
+
+    const oldKey = await deriveRoomKey(currentPass, meta.salt);
+    // Instant local feedback; the hub's timing-safe proof check is the
+    // authoritative gate and also covers a rotation that happened while
+    // this device was away (stale cached key).
+    if (session.roomKeyB64 && (await exportRoomKey(oldKey)) !== session.roomKeyB64) {
+      return setError("Current passphrase is wrong (the room may have been rotated).");
+    }
+    const oldProof = await computeProof(oldKey, roomId);
+
+    const newSalt = randomB64(16);
+    const newKey = await deriveRoomKey(newPass, newSalt);
+    const newProof = await computeProof(newKey, roomId);
+    // Wrap the previous key under the new one — the hub stores it blindly;
+    // only holders of the new passphrase can unwrap it.
+    const prevKey = await seal(newKey, await exportRoomKey(oldKey));
+
+    // Store rotation data and show confirmation modal
+    setPendingRotation({
+      oldProof,
+      newSalt,
+      newProof,
+      prevKey,
+      newKey,
+      deviceId,
+      profile,
+    });
+    setShowConfirmModal(true);
+  }
+
+  async function executeRotation(): Promise<void> {
+    const rotation = pendingRotation;
+    if (!rotation) return;
+    setShowConfirmModal(false);
     setBusy(true);
     try {
-      const session = useSessionStore.getState();
-      const deviceId = session.deviceId;
-      const profile = session.profile;
-      if (!deviceId || !profile) throw new Error("No device identity on this session.");
-
-      // Current salt comes from the hub — the client never persists it.
-      const metaRes = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/meta`);
-      if (!metaRes.ok) throw new Error("Room not reachable — is the hub up?");
-      const meta = (await metaRes.json()) as { salt: string };
-
-      const oldKey = await deriveRoomKey(currentPass, meta.salt);
-      // Instant local feedback; the hub's timing-safe proof check is the
-      // authoritative gate and also covers a rotation that happened while
-      // this device was away (stale cached key).
-      if (session.roomKeyB64 && (await exportRoomKey(oldKey)) !== session.roomKeyB64) {
-        throw new Error("Current passphrase is wrong (the room may have been rotated).");
-      }
-      const oldProof = await computeProof(oldKey, roomId);
-
-      const newSalt = randomB64(16);
-      const newKey = await deriveRoomKey(newPass, newSalt);
-      const newProof = await computeProof(newKey, roomId);
-      // Wrap the previous key under the new one — the hub stores it blindly;
-      // only holders of the new passphrase can unwrap it.
-      const prevKey = await seal(newKey, await exportRoomKey(oldKey));
-
-      await rotateRoom(roomId, { oldProof, salt: newSalt, proof: newProof, prevKey });
+      await rotateRoom(roomId, {
+        oldProof: rotation.oldProof,
+        salt: rotation.newSalt,
+        proof: rotation.newProof,
+        prevKey: rotation.prevKey,
+      });
 
       // Rotation revoked every token (ours included) — rejoin immediately
       // with the new proof; the socket restarts on the token change.
       const { token, moderators, keyHistory } = await postRoomJoin(roomId, {
-        deviceId,
-        name: profile.name,
-        color: profile.color,
-        proof: newProof,
+        deviceId: rotation.deviceId,
+        name: rotation.profile.name,
+        color: rotation.profile.color,
+        proof: rotation.newProof,
       });
+      const session = useSessionStore.getState();
       session.enterRoom({
         roomId,
         roomName: session.roomName ?? "",
         token,
-        roomKeyB64: await exportRoomKey(newKey),
+        roomKeyB64: await exportRoomKey(rotation.newKey),
         moderators,
-        prevRoomKeysB64: await unwrapKeyHistory(newKey, keyHistory),
+        prevRoomKeysB64: await unwrapKeyHistory(rotation.newKey, keyHistory),
         cursor: session.cursor,
       });
 
       setCurrentPass("");
       setNewPass("");
       setConfirmPass("");
+      setShowCurrent(false);
+      setShowNew(false);
+      setShowConfirm(false);
       toast("Passphrase changed — every other device must rejoin with the new one");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not change the passphrase.");
     } finally {
       setBusy(false);
+      setPendingRotation(null);
     }
   }
 
@@ -472,54 +601,85 @@ function PassphraseSection({ roomId }: { roomId: string }) {
         re-wrapped under the new one — but anyone who already had the old
         passphrase may have copied them.
       </p>
-      <form onSubmit={(e) => void onRotate(e)} className="flex flex-col gap-3">
-        <label className="flex flex-col gap-1.5">
-          <span className="caption text-ink">Current passphrase</span>
-          <TextInput
-            type="password"
-            value={currentPass}
-            onChange={(e) => setCurrentPass(e.target.value)}
-            placeholder="Today's passphrase"
-            aria-label="Current passphrase"
-            autoComplete="off"
-            className="max-w-[320px]"
-          />
-        </label>
-        <label className="flex flex-col gap-1.5">
-          <span className="caption text-ink">New passphrase</span>
-          <TextInput
-            type="password"
-            value={newPass}
-            onChange={(e) => setNewPass(e.target.value)}
-            placeholder="At least 8 characters"
-            aria-label="New passphrase"
-            autoComplete="off"
-            className="max-w-[320px]"
-          />
-        </label>
-        <label className="flex flex-col gap-1.5">
-          <span className="caption text-ink">Confirm new passphrase</span>
-          <TextInput
-            type="password"
-            value={confirmPass}
-            onChange={(e) => setConfirmPass(e.target.value)}
-            placeholder="Repeat it"
-            aria-label="Confirm new passphrase"
-            autoComplete="off"
-            className="max-w-[320px]"
-          />
-        </label>
+      <form onSubmit={(e) => void prepareRotation(e)} className="flex flex-col gap-3">
+        <PasswordField
+          label="Current passphrase"
+          value={currentPass}
+          onChange={setCurrentPass}
+          placeholder="Today's passphrase"
+          show={showCurrent}
+          onToggleShow={() => setShowCurrent((s) => !s)}
+          autoComplete="off"
+        />
+        <PasswordField
+          label="New passphrase"
+          value={newPass}
+          onChange={setNewPass}
+          placeholder="At least 8 characters"
+          show={showNew}
+          onToggleShow={() => setShowNew((s) => !s)}
+          autoComplete="off"
+        />
+        <PasswordField
+          label="Confirm new passphrase"
+          value={confirmPass}
+          onChange={setConfirmPass}
+          placeholder="Repeat it"
+          show={showConfirm}
+          onToggleShow={() => setShowConfirm((s) => !s)}
+          autoComplete="off"
+        />
         {error ? (
           <p role="alert" className="text-body-sm text-accent-magenta">
             {error}
           </p>
         ) : null}
         <div>
-          <Button type="submit" variant="magenta" disabled={busy}>
+          <Button type="submit" variant="magenta" disabled={busy || showConfirmModal}>
             {busy ? "Rotating…" : "Rotate passphrase"}
           </Button>
         </div>
       </form>
+
+      {showConfirmModal && pendingRotation && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-rotation-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-overlay-scrim/70 p-4"
+          onClick={() => setShowConfirmModal(false)}
+        >
+          <div
+            className="flex max-w-[480px] flex-col gap-4 rounded-xl bg-canvas p-5 shadow-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="size-5 text-accent-magenta shrink-0" aria-hidden="true" />
+              <h3 id="confirm-rotation-title" className="text-card-title">
+                Confirm passphrase rotation
+              </h3>
+            </div>
+            <p className="text-body-sm">
+              This action will <strong>immediately revoke access for every device in the room</strong>,
+              including yours. Everyone will need to rejoin with the new passphrase.
+            </p>
+            <ul className="flex flex-col gap-1.5 text-body-sm text-ink/80">
+              <li>• All active sessions will be disconnected</li>
+              <li>• Messages and files stay readable (old key is re-wrapped)</li>
+              <li>• Anyone with the old passphrase may have already copied content</li>
+              <li>• This action cannot be undone</li>
+            </ul>
+            <div className="flex flex-wrap gap-3 justify-end pt-2">
+              <Button variant="secondary" onClick={() => setShowConfirmModal(false)}>
+                Cancel
+              </Button>
+              <Button variant="magenta" onClick={() => void executeRotation()} disabled={busy}>
+                {busy ? "Rotating…" : "Yes, rotate passphrase"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

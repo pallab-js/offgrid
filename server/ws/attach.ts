@@ -1,11 +1,11 @@
 import type { WebSocketServer } from "ws";
 import type { IncomingMessage } from "node:http";
-import { OFFLINE_MS, MAX_FRAME_BYTES } from "../../src/lib/protocol";
+import { MAX_FRAME_BYTES } from "../../src/lib/protocol";
 import { ulid } from "../../src/lib/utils/id";
 import { clientIp } from "../ratelimit";
 import { log } from "../log";
 import { emitPresence, handleMessage } from "./dispatch";
-import { addConn, allConns, removeConn, type Conn } from "./registry";
+import { addConn, allConns, removeConn, getOfflineTimeout, type Conn } from "./registry";
 
 /** Wire a ws server to connection lifecycle + liveness sweeping. */
 export function attachWs(wss: WebSocketServer): void {
@@ -58,11 +58,13 @@ export function attachWs(wss: WebSocketServer): void {
   });
 
   // Liveness: any inbound frame counts as a heartbeat (TRD §4.4).
+  // Per-peer adaptive timeout: 3x RTT with min/max bounds.
   const sweep = setInterval(() => {
     const now = Date.now();
     for (const conn of allConns()) {
-      if (now - conn.lastFrameAt > OFFLINE_MS) {
-        log("info", "ws.stale", { device: conn.device?.id ?? "-" });
+      const timeout = getOfflineTimeout(conn);
+      if (now - conn.lastFrameAt > timeout) {
+        log("info", "ws.stale", { device: conn.device?.id ?? "-", timeoutMs: timeout });
         try {
           conn.ws.terminate();
         } catch {

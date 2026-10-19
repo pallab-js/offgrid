@@ -1,6 +1,6 @@
 "use client";
 
-import { getDb, type OutboxEntry } from "@/lib/idb/db";
+import { getDb, type OutboxEntry, getFramePriority } from "@/lib/idb/db";
 import type { ClientFrame } from "@/lib/protocol";
 import { meshSocket, FrameError } from "@/lib/ws/client";
 
@@ -74,11 +74,13 @@ function settle(clientId: string, ok: boolean, reason = ""): void {
 
 export async function enqueue(frame: ClientFrame & { clientId: string }): Promise<void> {
   const db = await getDb();
+  const priority = getFramePriority(frame);
   const entry: OutboxEntry = {
     clientId: frame.clientId,
     frame,
     attempts: 0,
     createdAt: Date.now(),
+    priority,
   };
   await db.put("outbox", entry);
   void flushOutbox();
@@ -123,7 +125,11 @@ export async function flushOutbox(): Promise<void> {
     const db = await getDb();
     const entries = (await db.getAll("outbox"))
       .filter((e) => !e.failed)
-      .sort((a, b) => a.createdAt - b.createdAt);
+      .sort((a, b) => {
+        // Higher priority first, then older createdAt first
+        if (a.priority !== b.priority) return b.priority - a.priority;
+        return a.createdAt - b.createdAt;
+      });
     for (const entry of entries) {
       if (!meshSocket.isOpen) return;
       // Backoff gate: an entry inside its retry window pauses the queue

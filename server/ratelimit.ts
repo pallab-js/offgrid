@@ -3,7 +3,7 @@ import { RATE_LIMIT_PER_SEC } from "../src/lib/protocol";
 /**
  * Hub rate limiting (TRD N5, SDA threat model).
  *
- * Three independent budgets:
+ * Four independent budgets:
  *  - **per WS connection** — the original limiter, now charged *before* frame
  *    parsing so malformed floods can't bypass it (pings are no longer exempt);
  *  - **per client IP across all of that IP's WS connections** — bounds the
@@ -11,7 +11,9 @@ import { RATE_LIMIT_PER_SEC } from "../src/lib/protocol";
  *    8 connections' worth so a flooder on a shared address (localhost, NAT)
  *    can't starve a well-behaved peer on the same address;
  *  - **per client IP for the HTTP API**, with strict sub-budgets on the
- *    passphrase-guessing surface (`POST .../join`) and room creation.
+ *    passphrase-guessing surface (`POST .../join`) and room creation;
+ *  - **global join attempts per IP** — bounds total passphrase guesses across
+ *    all rooms from a single IP (mitigates NAT-shared guessing).
  *
  * Sliding windows per key. Key tables are pruned lazily once they exceed
  * `maxKeys` so an attacker cycling keys can't grow memory without bound.
@@ -62,6 +64,9 @@ export const HTTP_REQUESTS_PER_MIN = 300;
 /** Passphrase guesses: `POST /api/rooms/{id}/join` per IP+room per minute. */
 export const JOIN_ATTEMPTS_PER_MIN = 10;
 
+/** Global passphrase guesses per IP per minute (across all rooms). */
+export const JOIN_ATTEMPTS_PER_MIN_GLOBAL = 20;
+
 /** Room creation per IP per minute (was unlimited). */
 export const ROOM_CREATE_PER_MIN = 10;
 
@@ -73,6 +78,7 @@ export const MAX_CONN_TOTAL = 256;
 export const wsIpLimiter = new SlidingWindowLimiter(WS_IP_FRAMES_PER_SEC, 1_000);
 export const httpLimiter = new SlidingWindowLimiter(HTTP_REQUESTS_PER_MIN, 60_000);
 export const joinLimiter = new SlidingWindowLimiter(JOIN_ATTEMPTS_PER_MIN, 60_000);
+export const joinLimiterGlobal = new SlidingWindowLimiter(JOIN_ATTEMPTS_PER_MIN_GLOBAL, 60_000);
 export const roomCreateLimiter = new SlidingWindowLimiter(ROOM_CREATE_PER_MIN, 60_000);
 
 /** Client address for limiter keys (`::ffff:`-mapped IPv4 normalized). */

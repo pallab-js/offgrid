@@ -60,11 +60,20 @@ interface ChatState {
 
 const MAX_REACT_QUEUE = 200;
 
-/* Serializes store mutations so IDB reads/writes keep a stable order. */
-let chain: Promise<unknown> = Promise.resolve();
-function serialized<T>(fn: () => Promise<T>): Promise<T> {
-  const run = chain.then(fn, fn);
-  chain = run.catch(() => undefined);
+/* Serializes store mutations per-channel so IDB reads/writes keep a stable order.
+ * Different channels are independent and can run in parallel. */
+const channelChains = new Map<string, Promise<unknown>>();
+function getChain(channelId: string): Promise<unknown> {
+  return channelChains.get(channelId) ?? Promise.resolve();
+}
+function setChain(channelId: string, promise: Promise<unknown>): void {
+  channelChains.set(channelId, promise);
+}
+
+function serialized<T>(channelId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = getChain(channelId);
+  const run = prev.then(fn, fn);
+  setChain(channelId, run.catch(() => undefined));
   return run;
 }
 
@@ -190,7 +199,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     setActive: (channelId) => set({ activeChannelId: channelId }),
 
     hydrate: (channelId) =>
-      serialized(async () => {
+      serialized(channelId, async () => {
         if (get().loaded[channelId]) return;
         const records = await listByChannel(channelId);
         const views = (await Promise.all(records.map(toView))).sort(compareViews);
@@ -202,7 +211,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       }),
 
     sendText: (channelId, text, replyTo = null) =>
-      serialized(async () => {
+      serialized(channelId, async () => {
         const { deviceId, profile, roomId } = useSessionStore.getState();
         if (!deviceId || !profile || !roomId) throw new Error("no session");
         const clientId = ulid();
@@ -233,7 +242,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       }),
 
     sendAttachment: (channelId, fileId) =>
-      serialized(async () => {
+      serialized(channelId, async () => {
         const { deviceId, profile, roomId } = useSessionStore.getState();
         if (!deviceId || !profile || !roomId) throw new Error("no session");
         const clientId = ulid();
@@ -263,7 +272,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       }),
 
     deleteMessage: (message) =>
-      serialized(async () => {
+      serialized(message.channelId, async () => {
         if (!message.serverId) {
           await removeRecord(message.uid);
           removeView(message.uid, message.channelId);
@@ -276,39 +285,47 @@ export const useChatStore = create<ChatState>((set, get) => {
       }),
 
     retryMessage: (uid) =>
-      serialized(async () => {
-        const next = await patchRecord(uid, { status: "pending", attempts: 0 });
-        if (next && get().loaded[next.channelId]) {
-          replaceView(uid, next.channelId, { status: "pending" });
-        }
-        await refreshPendingCount();
-        void get().flushOutbox();
-      }),
+      (async () => {
+        // Get the record first to find its channelId for serialization
+        const record = await getRecord(uid);
+        const channelId = record?.channelId ?? "";
+        return serialized(channelId, async () => {
+          const next = await patchRecord(uid, { status: "pending", attempts: 0 });
+          if (next && get().loaded[next.channelId]) {
+            replaceView(uid, next.channelId, { status: "pending" });
+          }
+          await refreshPendingCount();
+          void get().flushOutbox();
+        });
+      })(),
 
     toggleReaction: (message, emoji) =>
-      serialized(async () => {
+      (async () => {
         const { deviceId, roomId } = useSessionStore.getState();
         if (!deviceId || !roomId) return;
         const record = await getRecord(message.uid);
         if (!record) return;
-        const base = record.reactions ?? [];
-        const mine = base.some((r) => r.emoji === emoji && r.deviceId === deviceId);
-        const on = !mine;
-        const next = on
-          ? [...base, { emoji, deviceId, at: Date.now() }]
-          : base.filter((r) => !(r.emoji === emoji && r.deviceId === deviceId));
-        await patchRecord(record.uid, { reactions: next });
-        if (get().loaded[record.channelId]) {
-          replaceView(record.uid, record.channelId, { reactions: next });
-        }
-        if (!record.serverId) return;
-        if (reactionQueue.length >= MAX_REACT_QUEUE) reactionQueue.shift();
-        reactionQueue.push({ uid: record.uid, id: record.serverId, emoji, on });
-        void flushReactions();
-      }),
+        const channelId = record.channelId;
+        return serialized(channelId, async () => {
+          const base = record.reactions ?? [];
+          const mine = base.some((r) => r.emoji === emoji && r.deviceId === deviceId);
+          const on = !mine;
+          const next = on
+            ? [...base, { emoji, deviceId, at: Date.now() }]
+            : base.filter((r) => !(r.emoji === emoji && r.deviceId === deviceId));
+          await patchRecord(record.uid, { reactions: next });
+          if (get().loaded[record.channelId]) {
+            replaceView(record.uid, record.channelId, { reactions: next });
+          }
+          if (!record.serverId) return;
+          if (reactionQueue.length >= MAX_REACT_QUEUE) reactionQueue.shift();
+          reactionQueue.push({ uid: record.uid, id: record.serverId, emoji, on });
+          void flushReactions();
+        });
+      })(),
 
     applyIncoming: (msg) =>
-      serialized(async () => {
+      (async () => {
         const roomId = useSessionStore.getState().roomId;
         if (!roomId) return;
         const existing =
@@ -317,33 +334,39 @@ export const useChatStore = create<ChatState>((set, get) => {
         if (existing && existing.rev > msg.rev) return;
 
         const merged = recordFromServer(msg, roomId);
+        const channelId = merged.channelId;
         if (existing) {
           merged.uid = existing.uid;
           merged.deletePending = msg.deletedAt ? false : existing.deletePending;
         }
-        await putRecord(merged);
-        if (get().loaded[merged.channelId]) upsertView(await toView(merged));
-      }),
+        return serialized(channelId, async () => {
+          await putRecord(merged);
+          if (get().loaded[merged.channelId]) upsertView(await toView(merged));
+        });
+      })(),
 
     markAcked: (clientId, patch) =>
-      serialized(async () => {
+      (async () => {
         const record = await findByClientId(clientId);
         if (!record) return;
-        const next = await patchRecord(record.uid, {
-          serverId: patch.serverId,
-          rev: Math.max(record.rev, patch.rev),
-          status: "synced",
-          attempts: 0,
-          retryAfter: undefined,
-        });
-        if (next && get().loaded[next.channelId]) {
-          replaceView(next.uid, next.channelId, {
-            serverId: next.serverId,
-            rev: next.rev,
+        const channelId = record.channelId;
+        return serialized(channelId, async () => {
+          const next = await patchRecord(record.uid, {
+            serverId: patch.serverId,
+            rev: Math.max(record.rev, patch.rev),
             status: "synced",
+            attempts: 0,
+            retryAfter: undefined,
           });
-        }
-      }),
+          if (next && get().loaded[next.channelId]) {
+            replaceView(next.uid, next.channelId, {
+              serverId: next.serverId,
+              rev: next.rev,
+              status: "synced",
+            });
+          }
+        });
+      })(),
 
     flushOutbox: async () => {
       if (flushing) return;
@@ -371,7 +394,7 @@ export const useChatStore = create<ChatState>((set, get) => {
                 clientId: ulid(),
                 id: record.serverId,
               });
-              await serialized(() =>
+              await serialized(record.channelId, () =>
                 patchRecord(record.uid, {
                   deletePending: false,
                   rev: Math.max(record.rev, ack.rev),
@@ -395,7 +418,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             const retryable = error instanceof FrameError && RETRYABLE.has(error.code);
             const attempts = record.attempts + 1;
             if (retryable && attempts < MAX_ATTEMPTS) {
-              await serialized(() =>
+              await serialized(record.channelId, () =>
                 patchRecord(record.uid, {
                   attempts,
                   retryAfter: Date.now() + backoffDelay(attempts),
@@ -405,7 +428,7 @@ export const useChatStore = create<ChatState>((set, get) => {
               return;
             }
             if (record.status === "pending") {
-              await serialized(async () => {
+              await serialized(record.channelId, async () => {
                 const next = await patchRecord(record.uid, {
                   status: "failed",
                   attempts,
@@ -415,7 +438,7 @@ export const useChatStore = create<ChatState>((set, get) => {
                 }
               });
             } else {
-              await serialized(() => patchRecord(record.uid, { deletePending: false }));
+              await serialized(record.channelId, () => patchRecord(record.uid, { deletePending: false }));
             }
           }
         }

@@ -14,7 +14,9 @@ import { useMapStore } from "@/stores/map";
 import { useSosStore } from "@/stores/sos";
 import { useBeaconStore } from "@/stores/beacon";
 import { flushAllOutboxes } from "@/lib/sync/outbox";
-import { resetRoomStores } from "@/stores/reset";
+import { flushHttpOutbox } from "@/lib/sync/httpOutbox";
+import { scheduleCompaction, checkAndCompact } from "@/lib/sync/compaction";
+import { hydrateAllStores, resetAllStores } from "@/stores/registry";
 import { toast } from "@/stores/toast";
 import { useRouter } from "next/navigation";
 
@@ -70,17 +72,17 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
   const deviceId = useSessionStore((s) => s.deviceId);
   const profileName = useSessionStore((s) => s.profile?.name);
   const profileColor = useSessionStore((s) => s.profile?.color);
+  const profileManualBattery = useSessionStore((s) => s.profile?.manualBattery);
   const roomId = useSessionStore((s) => s.roomId);
   const token = useSessionStore((s) => s.token);
   const setCursor = useSessionStore((s) => s.setCursor);
-  const hydrate = useSessionStore((s) => s.hydrate);
   const router = useRouter();
   const typingTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const lastRttPush = useRef(0);
 
   useEffect(() => {
-    hydrate();
-  }, [hydrate]);
+    void hydrateAllStores();
+  }, []);
 
   /**
    * A ref-less `error { code: "BAD_TOKEN" }` is a join rejection: the hub
@@ -91,7 +93,7 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
    */
   const endSession = useCallback(() => {
     if (!useSessionStore.getState().roomId) return; // already ended (reconnect race)
-    resetRoomStores();
+    resetAllStores();
     useSessionStore.getState().leaveRoom();
     toast("Your session ended — rejoin with the room's current passphrase", "error");
     router.push("/join");
@@ -171,6 +173,9 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
       useMeshStore.getState().setStatus(status);
       if (status === "online") {
         void flushAllOutboxes();
+        void flushHttpOutbox();
+        // Check storage quota on reconnect
+        void checkAndCompact();
       }
     });
     const offRtt = meshSocket.onRtt((rttMs) => {
@@ -187,7 +192,10 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
       device: { id: deviceId, name: profileName, color: profileColor },
     });
 
-    // Battery (Chromium only — manual entry covers the rest, PRD §4.1).
+    // Schedule periodic IndexedDB compaction (runs hourly + on quota pressure)
+    scheduleCompaction();
+
+    // Battery: use Battery API if available, otherwise fall back to manual entry.
     let batteryCleanup: (() => void) | undefined;
     const nav = navigator as Navigator & {
       getBattery?: () => Promise<{
@@ -207,6 +215,9 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
         battery.addEventListener("levelchange", push);
         batteryCleanup = () => battery.removeEventListener("levelchange", push);
       });
+    } else if (profileManualBattery !== null && profileManualBattery !== undefined) {
+      // Send manual battery once on connect (no levelchange event for manual entry)
+      meshSocket.send({ t: "presence.update", battery: profileManualBattery });
     }
 
     return () => {
@@ -216,7 +227,7 @@ export function MeshProvider({ children }: { children: React.ReactNode }) {
       batteryCleanup?.();
       meshSocket.stop();
     };
-  }, [deviceId, profileName, profileColor, roomId, token, applyFrame]);
+  }, [deviceId, profileName, profileColor, roomId, token, applyFrame, profileManualBattery]);
 
   useEffect(() => {
     const timers = typingTimers.current;

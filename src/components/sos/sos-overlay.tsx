@@ -7,9 +7,21 @@ import { useMeshStore } from "@/stores/mesh";
 import { useSessionStore } from "@/stores/session";
 import { Button } from "@/components/ui/button";
 
+const STROBE_KEY = "offgrid.sos.strobe";
+
+function getStrobeEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(STROBE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Full-room distress overlay: strobe + WebAudio siren while any SOS is
- * active (AC-SOS). Reduced-motion gets a static banner; audio can be muted.
+ * active (AC-SOS). Strobe is opt-in (default off) with explicit warning.
+ * Reduced-motion gets a static banner; audio can be muted.
  */
 export function SosOverlay() {
   const events = useSosStore((s) => s.events);
@@ -18,6 +30,7 @@ export function SosOverlay() {
   const peers = useMeshStore((s) => s.peers);
   const myId = useSessionStore((s) => s.deviceId);
   const [muted, setMuted] = useState(false);
+  const [strobeEnabled] = useState(getStrobeEnabled());
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const active = events.find((e) => e.active) ?? null;
@@ -25,6 +38,16 @@ export function SosOverlay() {
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
+
+  // Apply/remove strobe data attribute on body
+  useEffect(() => {
+    if (active && strobeEnabled) {
+      document.body.setAttribute("data-sos-strobe", "true");
+    } else {
+      document.body.removeAttribute("data-sos-strobe");
+    }
+    return () => document.body.removeAttribute("data-sos-strobe");
+  }, [active, strobeEnabled]);
 
   useEffect(() => {
     if (!active || muted) return;
@@ -79,7 +102,7 @@ export function SosOverlay() {
       role="alertdialog"
       aria-modal="true"
       aria-label="SOS active"
-      className="fixed inset-0 z-[70] flex flex-col items-center justify-center gap-6 bg-inverse-canvas text-inverse-ink animate-sos-strobe"
+      className={`fixed inset-0 z-[70] flex flex-col items-center justify-center gap-6 bg-inverse-canvas text-inverse-ink ${strobeEnabled ? "animate-sos-strobe" : ""}`}
     >
       <div className="flex w-full max-w-[560px] flex-col items-center gap-4 px-6 text-center">
         <span className="inline-flex items-center gap-3 rounded-pill bg-accent-magenta px-6 py-2 text-button font-medium text-on-primary">
@@ -116,7 +139,9 @@ export function SosOverlay() {
           </button>
         </div>
         <p className="caption text-inverse-ink">
-          Strobes and siren repeat on every device until it is cleared.
+          {strobeEnabled
+            ? "Strobes and siren repeat on every device until it is cleared."
+            : "Siren repeats on every device until it is cleared. Enable strobe in Beacon settings."}
         </p>
       </div>
       <audio ref={audioRef} className="hidden" />

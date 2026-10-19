@@ -1,5 +1,6 @@
 "use client";
 
+import { z } from "zod";
 import { useSessionStore } from "@/stores/session";
 
 /**
@@ -17,6 +18,35 @@ export interface JoinResponse {
   moderators: string[];
   /** Wrapped previous room keys (oldest first) — see TRD §9.13. */
   keyHistory: Sealed[];
+}
+
+// Zod schemas for API response validation
+const sealedSchema = z.object({
+  ct: z.string().min(1),
+  iv: z.string().min(1),
+});
+
+const joinResponseSchema = z.object({
+  token: z.string().min(1),
+  moderators: z.array(z.string()).default([]),
+  keyHistory: z.array(sealedSchema).default([]),
+});
+
+const moderatorsResponseSchema = z.object({
+  moderators: z.array(z.string()).optional(),
+});
+
+const clearedResponseSchema = z.object({
+  cleared: z.number().int().nonnegative().optional(),
+});
+
+function parseJson<T>(schema: z.ZodSchema<T>, data: unknown): T {
+  const result = schema.safeParse(data);
+  if (!result.success) {
+    const issues = result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+    throw new Error(`Invalid API response: ${issues}`);
+  }
+  return result.data;
 }
 
 /**
@@ -42,16 +72,8 @@ export async function postRoomJoin(
       | null;
     throw new Error(body?.error?.message ?? "Could not join the room.");
   }
-  const body = (await res.json()) as {
-    token: string;
-    moderators?: string[];
-    keyHistory?: Sealed[];
-  };
-  return {
-    token: body.token,
-    moderators: Array.isArray(body.moderators) ? body.moderators : [],
-    keyHistory: Array.isArray(body.keyHistory) ? body.keyHistory : [],
-  };
+  const body = await res.json();
+  return parseJson(joinResponseSchema, body);
 }
 
 /** Adds or removes one device from the room's moderator list (moderator-only). */
@@ -76,8 +98,9 @@ export async function setRoomModerator(
       | null;
     throw new Error(body?.error?.message ?? "Could not update moderators.");
   }
-  const body = (await res.json()) as { moderators?: string[] };
-  return Array.isArray(body.moderators) ? body.moderators : [];
+  const body = await res.json();
+  const parsed = parseJson(moderatorsResponseSchema, body);
+  return parsed.moderators ?? [];
 }
 
 /** Bulk-clears the room's join notices (moderator-only). Returns count cleared. */
@@ -94,8 +117,9 @@ export async function clearJoinNotices(roomId: string): Promise<number> {
       | null;
     throw new Error(body?.error?.message ?? "Could not clear join notices.");
   }
-  const body = (await res.json()) as { cleared?: number };
-  return body.cleared ?? 0;
+  const body = await res.json();
+  const parsed = parseJson(clearedResponseSchema, body);
+  return parsed.cleared ?? 0;
 }
 
 /**

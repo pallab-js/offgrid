@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Radio, Send, Siren, Square } from "lucide-react";
+import { Radio, Send, Siren, Square, AlertTriangle } from "lucide-react";
 import {
   MORSE_PRESETS,
   toMorse,
@@ -20,6 +20,26 @@ import { Pill } from "@/components/ui/pill";
 import { TextArea } from "@/components/ui/input";
 import { cn } from "@/lib/utils/cn";
 
+const STROBE_KEY = "offgrid.sos.strobe";
+
+function getStrobeEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(STROBE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function setStrobeEnabled(enabled: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(STROBE_KEY, String(enabled));
+  } catch {
+    /* ignore */
+  }
+}
+
 export function BeaconPage() {
   const hasRoom = useSessionStore((s) => Boolean(s.roomId));
   const [text, setText] = useState("SOS");
@@ -28,6 +48,7 @@ export function BeaconPage() {
   const [playing, setPlaying] = useState(false);
   const [audioOn, setAudioOn] = useState(true);
   const [shared, setShared] = useState(false);
+  const [strobeEnabled, setStrobeEnabledState] = useState(getStrobeEnabled);
   const controllerRef = useRef<PlayController | null>(null);
 
   const history = useBeaconStore((s) => s.history);
@@ -228,6 +249,36 @@ export function BeaconPage() {
           ) : null}
         </aside>
       </div>
+
+      {/* SOS Strobe Settings */}
+      <section className="flex flex-col gap-3 rounded-xl border border-hairline bg-canvas p-5">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="size-5 text-accent-magenta" aria-hidden="true" />
+          <h2 className="text-card-title">SOS Strobe</h2>
+        </div>
+        <p className="text-body-sm text-ink/80">
+          Full-screen high-contrast flashing can trigger seizures in people with
+          photosensitive epilepsy. <strong>Disabled by default.</strong>
+        </p>
+        <label className="flex items-center gap-3">
+          <input
+            type="checkbox"
+            checked={strobeEnabled}
+            onChange={(e) => {
+              const enabled = e.target.checked;
+              setStrobeEnabled(enabled);
+              setStrobeEnabledState(enabled);
+            }}
+            className="size-4 accent-black"
+            aria-label="Enable SOS strobe (flashing screen)"
+          />
+          <span className="text-body-sm">Enable full-screen strobe during SOS</span>
+        </label>
+        <p className="caption text-ink">
+          When enabled, SOS shows a 2 Hz magenta/black strobe on all devices.
+          Respects <code>prefers-reduced-motion</code> (always disables strobe).
+        </p>
+      </section>
 
       <section className="flex flex-col gap-3">
         <h2 className="text-card-title">Shared beacons</h2>

@@ -117,6 +117,52 @@ export interface MetaRecord {
   manualBattery?: number | null;
 }
 
+/** Priority for outbox frames: higher = sent first. SOS > msg > file > note > check > wp > beacon > channel > typing */
+export const OUTBOX_PRIORITY = {
+  sos: 100,
+  msg: 90,
+  file: 80,
+  note: 70,
+  check: 60,
+  wp: 50,
+  beacon: 40,
+  channel: 30,
+  typing: 10,
+} as const;
+
+export type OutboxPriority = (typeof OUTBOX_PRIORITY)[keyof typeof OUTBOX_PRIORITY];
+
+/** Computes priority from frame type. */
+export function getFramePriority(frame: ClientFrame): OutboxPriority | 0 {
+  switch (frame.t) {
+    case "sos.raise":
+    case "sos.clear":
+      return OUTBOX_PRIORITY.sos;
+    case "msg.send":
+    case "msg.del":
+    case "msg.react":
+      return OUTBOX_PRIORITY.msg;
+    case "file.announce":
+      return OUTBOX_PRIORITY.file;
+    case "note.save":
+    case "note.del":
+      return OUTBOX_PRIORITY.note;
+    case "check.set":
+      return OUTBOX_PRIORITY.check;
+    case "wp.save":
+    case "wp.del":
+      return OUTBOX_PRIORITY.wp;
+    case "beacon.share":
+      return OUTBOX_PRIORITY.beacon;
+    case "channel.create":
+      return OUTBOX_PRIORITY.channel;
+    case "typing":
+      return OUTBOX_PRIORITY.typing;
+    default:
+      return 0;
+  }
+}
+
 export interface OutboxEntry {
   clientId: string;
   frame: ClientFrame & { clientId: string };
@@ -124,6 +170,20 @@ export interface OutboxEntry {
   createdAt: number;
   failed?: boolean;
   /** Earliest time the next send attempt may run (exponential backoff). */
+  nextAttemptAt?: number;
+  /** Priority: higher = sent first. */
+  priority: OutboxPriority | 0;
+}
+
+export interface HttpOutboxEntry {
+  id: string;
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body: string | null;
+  attempts: number;
+  createdAt: number;
+  failed?: boolean;
   nextAttemptAt?: number;
 }
 
@@ -140,13 +200,14 @@ interface OffgridSchema extends DBSchema {
   sos: { key: string; value: SosRecord; indexes: { "by-room": string } };
   meta: { key: string; value: MetaRecord };
   outbox: { key: string; value: OutboxEntry };
+  httpOutbox: { key: string; value: HttpOutboxEntry };
 }
 
 let dbPromise: Promise<IDBPDatabase<OffgridSchema>> | null = null;
 
 export function getDb(): Promise<IDBPDatabase<OffgridSchema>> {
   if (!dbPromise) {
-    dbPromise = openDB<OffgridSchema>("offgrid", 3, {
+    dbPromise = openDB<OffgridSchema>("offgrid", 4, {
       upgrade(db, oldVersion) {
         if (oldVersion < 1) {
           const store = db.createObjectStore("messages", { keyPath: "uid" });
@@ -169,6 +230,9 @@ export function getDb(): Promise<IDBPDatabase<OffgridSchema>> {
           sos.createIndex("by-room", "roomId");
           db.createObjectStore("meta", { keyPath: "key" });
           db.createObjectStore("outbox", { keyPath: "clientId" });
+        }
+        if (oldVersion < 4) {
+          db.createObjectStore("httpOutbox", { keyPath: "id" });
         }
       },
     });

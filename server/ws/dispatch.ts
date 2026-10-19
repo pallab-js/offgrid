@@ -75,6 +75,12 @@ function dispatch(conn: Conn, frame: ClientFrame): void {
       if (!resolved) throw new repo.RepoError("BAD_TOKEN", "invalid token");
       const meta = repo.getRoomMeta(resolved.roomId);
       if (!meta) throw new repo.RepoError("ROOM_NOT_FOUND", "room gone");
+      // Protocol version check: reject if client version > server version
+      if (typeof frame.v === "number" && frame.v > 1) {
+        send(conn, { t: "error", code: "NOT_IMPLEMENTED", message: "client protocol version too new" });
+        try { conn.ws.close(1008, "protocol version mismatch"); } catch {}
+        return;
+      }
 
       if (conn.roomId && conn.roomId !== resolved.roomId) {
         const previous = conn.roomId;

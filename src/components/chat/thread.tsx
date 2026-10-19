@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import {
   Check,
   CheckCheck,
@@ -389,29 +390,10 @@ function MessageRow({
           ) : null}
           <span className="flex items-center gap-1">
             {pickerOpen ? (
-              <>
-                <div
-                  className="fixed inset-0 z-10"
-                  onClick={() => setPickerOpen(false)}
-                  aria-hidden="true"
-                />
-                <div className="absolute right-0 bottom-full z-20 mb-1 flex gap-1 rounded-2xl border border-hairline bg-canvas p-1 shadow-lg">
-                  {REACTION_CHOICES.map((emoji) => (
-                    <button
-                      key={emoji}
-                      type="button"
-                      onClick={() => {
-                        void toggleReaction(msg, emoji);
-                        setPickerOpen(false);
-                      }}
-                      aria-label={`React with ${emoji}`}
-                      className="inline-flex size-11 items-center justify-center rounded-full text-body hover:bg-surface-soft xs:size-9"
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
-              </>
+              <ReactionPicker
+                onPick={(emoji) => void toggleReaction(msg, emoji)}
+                onClose={() => setPickerOpen(false)}
+              />
             ) : null}
             <button
               type="button"
@@ -632,5 +614,36 @@ function Composer({
         </p>
       ) : null}
     </div>
+  );
+}
+
+function ReactionPicker({
+  onPick,
+  onClose,
+}: {
+  onPick: (emoji: string) => void;
+  onClose: () => void;
+}) {
+  return createPortal(
+    <div className="fixed inset-0 z-50" onClick={onClose} aria-hidden="true">
+      <div className="absolute right-0 bottom-full z-50 mb-2 flex gap-1 rounded-2xl border border-hairline bg-canvas p-1 shadow-lg">
+        {REACTION_CHOICES.map((emoji) => (
+          <button
+            key={emoji}
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPick(emoji);
+              onClose();
+            }}
+            aria-label={`React with ${emoji}`}
+            className="inline-flex size-11 items-center justify-center rounded-full text-body hover:bg-surface-soft xs:size-9"
+          >
+            {emoji}
+          </button>
+        ))}
+      </div>
+    </div>,
+    document.body,
   );
 }

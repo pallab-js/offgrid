@@ -226,7 +226,7 @@ export type ServerFrame = z.infer<typeof s2cSchema>;
 /* ---------------------------------------------- client → server (control) */
 
 export const c2sSchema = z.discriminatedUnion("t", [
-  z.object({ t: z.literal("join"), token: z.string().min(16).max(128), device: deviceSchema }),
+  z.object({ t: z.literal("join"), token: z.string().min(16).max(128), device: deviceSchema, v: z.number().int().positive().optional() }),
   z.object({ t: z.literal("leave") }),
   z.object({ t: z.literal("ping"), ts: z.number() }),
 

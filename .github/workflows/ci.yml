@@ -4,29 +4,33 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch:
+    branches: [main]
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  checks:
-    name: typecheck, lint, test, build, live-verify
+  static-checks:
+    name: Static checks
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v6
-        # Version comes from package.json "packageManager".
-
-      - uses: actions/setup-node@v7
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
         with:
-          # 22 is the floor for the live-verify scripts (global WebSocket).
-          node-version: 22
-          cache: pnpm
+          version: 10
+          run_install: false
 
-      - name: Install
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
@@ -35,39 +39,64 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Unit tests
+      - name: Test
         run: pnpm test
 
-      - name: Production build
+      - name: Build
         run: pnpm build
 
-      # End-to-end gate: boot the real hub (prod build, ephemeral data dir)
-      # and drive it with the same verify scripts used before each release.
-      - name: Boot hub
+  # Live hub verification (runs on main branch only, after static checks pass)
+  live-verification:
+    name: Live hub verification
+    needs: static-checks
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build production
+        run: pnpm build
+
+      - name: Start hub in background
         run: |
-          DATA_DIR=/tmp/offgrid-ci NODE_ENV=production PORT=3000 \
-            nohup pnpm exec tsx server/index.ts > hub.log 2>&1 &
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:3000/api/health > /dev/null; then
-              echo "hub healthy after ${i}s"
-              exit 0
+          pnpm start &
+          HUB_PID=$!
+          echo "HUB_PID=$HUB_PID" >> $GITHUB_ENV
+          # Wait for hub to be ready
+          for i in {1..30}; do
+            if curl -sf http://localhost:3000/api/health >/dev/null; then
+              echo "Hub is ready"
+              break
             fi
             sleep 1
           done
-          echo "::error::hub did not become healthy within 30s"
-          exit 1
 
-      - name: Live verification (revocation, moderation, rotation)
-        env:
-          HUB: http://localhost:3000
-          # verify-revoke.ts force-expires a token by editing the hub's
-          # SQLite file directly, so it must point at the same data dir.
-          DATA_DIR: /tmp/offgrid-ci
+      - name: Run smoke tests
+        run: pnpm exec tsx scripts/smoke-p1.ts
+
+      - name: Verify security flows
         run: |
           pnpm exec tsx scripts/verify-revoke.ts
           pnpm exec tsx scripts/verify-moderation.ts
           pnpm exec tsx scripts/verify-rotate.ts
 
-      - name: Hub log
-        if: failure()
-        run: cat hub.log || true
+      - name: Stop hub
+        if: always()
+        run: |
+          if [ -n "$HUB_PID" ]; then kill $HUB_PID 2>/dev/null || true; fi

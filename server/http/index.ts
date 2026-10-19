@@ -8,8 +8,9 @@ import { fileCipherSize } from "../../src/lib/protocol/constants";
 import { currentRev } from "../db/index";
 import * as repo from "../db/repo";
 import { broadcast, connectionCount, roomConns, send } from "../ws/registry";
-import { clientIp, httpLimiter, joinLimiter, roomCreateLimiter } from "../ratelimit";
+import { clientIp, httpLimiter, joinLimiter, joinLimiterGlobal, roomCreateLimiter } from "../ratelimit";
 import { log } from "../log";
+import { getMetrics, getMetricsContentType } from "../metrics";
 
 const STARTED_AT = Date.now();
 
@@ -44,6 +45,13 @@ export async function handleApi(
       });
     }
 
+    if (method === "GET" && path === "/metrics") {
+      const metrics = await getMetrics();
+      res.writeHead(200, { "content-type": getMetricsContentType() });
+      res.end(metrics);
+      return;
+    }
+
     // Everything below (except health) draws from one per-IP minute budget.
     if (!httpLimiter.allow(ip)) {
       throw new HttpError(429, "RATE_LIMITED", "too many requests from this address");
@@ -71,10 +79,12 @@ export async function handleApi(
       // The proof is the only thing standing between a caller and a token, so
       // guesses get a strict per-IP+room budget — charged before the body is
       // even read (SDA threat model: online passphrase guessing).
-      if (!joinLimiter.allow(`${ip}|${roomId}`)) {
+      // Also enforce a global per-IP budget to prevent NAT-shared guessing across rooms.
+      if (!joinLimiter.allow(`${ip}|${roomId}`) || !joinLimiterGlobal.allow(ip)) {
         log("warn", "room.join.throttled", { room: roomId, ip });
         throw new HttpError(429, "RATE_LIMITED", "too many join attempts, try again in a minute");
       }
+      requireValidOrigin(req);
       const body = await readJson(req);
       const input = joinSchema.parse(body);
       if (!repo.verifyProof(roomId, input.proof)) {
@@ -138,6 +148,7 @@ export async function handleApi(
       if (!header?.startsWith("Bearer ")) {
         throw new HttpError(401, "BAD_TOKEN", "missing bearer token");
       }
+      requireValidOrigin(req);
       const token = header.slice(7);
       const body = (await readJsonOptional(req)) as { deviceId?: unknown } | null;
       const target = typeof body?.deviceId === "string" ? body.deviceId : null;
@@ -206,6 +217,7 @@ export async function handleApi(
       if (!repo.isModerator(roomId, caller.deviceId)) {
         throw new HttpError(403, "NOT_MODERATOR", "only moderators can change the moderator list");
       }
+      requireValidOrigin(req);
       const input = modsSchema.parse(await readJson(req));
       const current = repo.getModerators(roomId);
       const next = input.on
@@ -229,6 +241,7 @@ export async function handleApi(
       if (!repo.isModerator(roomId, caller.deviceId)) {
         throw new HttpError(403, "NOT_MODERATOR", "only moderators can clear join notices");
       }
+      requireValidOrigin(req);
       // One deliberate moderator action, one transaction, tombstones out —
       // clients prune exactly like ordinary message deletions. This is the
       // only path that removes system messages: msg.del rejects them for
@@ -254,10 +267,12 @@ export async function handleApi(
       // stolen token alone cannot rotate a room, only a passphrase holder
       // (or an eavesdropper who captured a join frame — the documented
       // cleartext-LAN limit) can. Guesses draw from the join budget.
-      if (!joinLimiter.allow(`${ip}|${roomId}`)) {
+      // Also enforce a global per-IP budget to prevent NAT-shared guessing across rooms.
+      if (!joinLimiter.allow(`${ip}|${roomId}`) || !joinLimiterGlobal.allow(ip)) {
         log("warn", "room.rotate.throttled", { room: roomId });
         throw new HttpError(429, "RATE_LIMITED", "too many attempts, try again in a minute");
       }
+      requireValidOrigin(req);
       const input = rotateSchema.parse(await readJson(req));
       const meta = repo.getRoomMeta(roomId);
       if (!meta) throw new HttpError(404, "ROOM_NOT_FOUND", "unknown room");
@@ -293,6 +308,7 @@ export async function handleApi(
     const fileCollection = /^\/api\/rooms\/([^/]+)\/files$/.exec(path);
     if (method === "POST" && fileCollection) {
       const roomId = decodeURIComponent(fileCollection[1]!);
+      requireValidOrigin(req);
       return await handleUpload(req, res, roomId);
     }
 
@@ -304,6 +320,7 @@ export async function handleApi(
         return await handleDownload(req, res, roomId, fileId, method);
       }
       if (method === "DELETE") {
+        requireValidOrigin(req);
         return await handleFileDelete(req, res, roomId, fileId);
       }
     }
@@ -387,6 +404,22 @@ const rotateSchema = z.object({
 function issue(error: z.ZodError): string {
   const first = error.issues[0];
   return first ? `${first.path.join(".") || "body"}: ${first.message}` : "invalid body";
+}
+
+/** Validates Origin header for browser-initiated requests to prevent CSRF. */
+function requireValidOrigin(req: IncomingMessage): void {
+  const origin = req.headers.origin;
+  if (!origin) return; // Non-browser clients (curl, scripts) — token is the auth
+  let originHost = "";
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    throw new HttpError(403, "BAD_ORIGIN", "malformed Origin header");
+  }
+  const host = req.headers.host ?? "";
+  if (originHost !== host) {
+    throw new HttpError(403, "BAD_ORIGIN", "Origin does not match Host");
+  }
 }
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
