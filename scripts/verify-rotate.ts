@@ -21,7 +21,7 @@ import {
 } from "../src/lib/crypto/room";
 import { randomB64 } from "../src/lib/crypto/base64";
 
-const HUB = process.env.HUB ?? "http://127.0.0.1:8787";
+const HUB = process.env.HUB ?? "http://localhost:3000";
 const ROOM = `01VERIFYROT${Date.now().toString(36).toUpperCase().padStart(11, "0")}`;
 const OLD_PASS = "old-field-passphrase";
 const NEW_PASS = "new-field-passphrase";

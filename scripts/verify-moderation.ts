@@ -10,7 +10,7 @@
  */
 import { strict as assert } from "node:assert";
 
-const HUB = process.env.HUB ?? "http://127.0.0.1:8787";
+const HUB = process.env.HUB ?? "http://localhost:3000";
 const ROOM = `01VERIFYMOD${Date.now().toString(36).toUpperCase().padStart(12, "0")}`;
 
 let passed = 0;
