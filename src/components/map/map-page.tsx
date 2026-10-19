@@ -491,6 +491,10 @@ export function MapPage() {
           onClick={onCanvasClick}
         >
           {imgUrl ? (
+            // User-calibrated map image served from a blob: object URLs are
+            // in-memory data that next/image's optimizer can't (and shouldn't)
+            // process, so a plain <img> is correct here.
+            // eslint-disable-next-line @next/next/no-img-element
             <img
               src={imgUrl}
               alt="Map image"
