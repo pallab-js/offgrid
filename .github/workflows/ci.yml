@@ -51,14 +51,30 @@ jobs:
     needs: static-checks
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       # Disable TLS for CI live verification (openssl not guaranteed in runner)
       ENABLE_TLS: "false"
       NODE_ENV: "production"
       DATA_DIR: "/tmp/offgrid-ci-data"
+      HUB: "http://localhost:3000"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install build tools for native modules (better-sqlite3)
+        run: sudo apt-get update && sudo apt-get install -y python3 make g++
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
